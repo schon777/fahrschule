@@ -1,0 +1,11 @@
+Was ist die Cloud?
+Was kann die Cloud?
+Vor-/Nachteile
+
+"Wer hat`s erfunden?"
+
+SaaS - Software as a Service
+
+PaaS - Platform as a Service
+
+IaaS - Infrastructure as a Service

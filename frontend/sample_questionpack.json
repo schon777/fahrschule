@@ -1,0 +1,221 @@
+{
+  "schema": "ap2-questionpack-v1",
+  "meta": {
+    "title": "AP2 Pack Sample",
+    "generated_by": "ChatGPT",
+    "created_at": "2026-02-20"
+  },
+  "topics": [
+    { "slug": "netzwerk-vlan", "title": "Netzwerk VLAN", "topic_area": "netzwerk" },
+    { "slug": "elektro-schutz", "title": "Elektro Schutz", "topic_area": "elektrotechnik" },
+    { "slug": "it-backup", "title": "IT Backup", "topic_area": "it-systeme" }
+  ],
+  "questions": [
+    {
+      "id": "netz-vlan-001",
+      "topic_slug": "netzwerk-vlan",
+      "type": "multi",
+      "prompt": "Which statements about VLANs are typically correct?",
+      "options": ["Segment Layer 2 networks", "Replace routing", "Reduce broadcast domains", "Require IP addresses"],
+      "correct": [0, 2],
+      "explanation": "VLANs segment Layer 2 and reduce broadcast scope.",
+      "source_ref": "internal:Library/Netzwerk/VLAN/vlan-grundlagen.md",
+      "tags": ["vlan", "l2"]
+    },
+    {
+      "id": "netz-vlan-002",
+      "topic_slug": "netzwerk-vlan",
+      "type": "single",
+      "prompt": "Which standard is used for VLAN tagging?",
+      "options": ["802.1q", "802.3af", "802.11n", "802.1x"],
+      "correct": [0],
+      "explanation": "IEEE 802.1Q defines VLAN tags.",
+      "source_ref": "internal:Library/Netzwerk/VLAN/vlan-grundlagen.md",
+      "tags": ["vlan"]
+    },
+    {
+      "id": "netz-vlan-003",
+      "topic_slug": "netzwerk-vlan",
+      "type": "truefalse",
+      "statement": "VLANs only work on Layer 3.",
+      "correct": false,
+      "explanation": "VLANs are a Layer 2 concept.",
+      "source_ref": "internal:Library/Netzwerk/VLAN/vlan-grundlagen.md",
+      "tags": ["vlan"]
+    },
+    {
+      "id": "netz-vlan-004",
+      "topic_slug": "netzwerk-vlan",
+      "type": "fillblank",
+      "text": "VLAN tagging uses standard __.",
+      "answers": [["802.1q", "8021q"]],
+      "explanation": "IEEE 802.1Q is the VLAN tag.",
+      "source_ref": "internal:Library/Netzwerk/VLAN/vlan-grundlagen.md",
+      "tags": ["vlan"]
+    },
+    {
+      "id": "netz-vlan-005",
+      "topic_slug": "netzwerk-vlan",
+      "type": "matching",
+      "prompt": "Match term to meaning.",
+      "left": ["Access port", "Trunk port", "Native VLAN"],
+      "right": ["Single VLAN on port", "Multiple VLANs on port", "Untagged VLAN"],
+      "pairs": [[0, 0], [1, 1], [2, 2]],
+      "explanation": "Access ports carry one VLAN, trunks multiple.",
+      "source_ref": "internal:Library/Netzwerk/VLAN/vlan-grundlagen.md",
+      "tags": ["vlan"]
+    },
+    {
+      "id": "elek-schutz-001",
+      "topic_slug": "elektro-schutz",
+      "type": "multi",
+      "prompt": "Which devices can detect fault currents?",
+      "options": ["RCD", "FI", "LS", "NH"],
+      "correct": [0, 1],
+      "explanation": "RCD/FI detect residual current.",
+      "source_ref": "internal:Library/Elektrotechnik/Schutztechnik/rcd-fi-fehlerstromschutz.md",
+      "tags": ["schutz"]
+    },
+    {
+      "id": "elek-schutz-002",
+      "topic_slug": "elektro-schutz",
+      "type": "single",
+      "prompt": "Which rule comes first in safe work steps?",
+      "options": ["Disconnect", "Measure", "Ground", "Cover"],
+      "correct": [0],
+      "explanation": "Disconnect is the first step.",
+      "source_ref": "internal:Library/Elektrotechnik/Sicherheit/fuenf-sicherheitsregeln.md",
+      "tags": ["sicherheit"]
+    },
+    {
+      "id": "elek-schutz-003",
+      "topic_slug": "elektro-schutz",
+      "type": "truefalse",
+      "prompt": "Protective earth may be switched.",
+      "correct": false,
+      "explanation": "Protective earth must not be switched.",
+      "source_ref": "internal:Library/Elektrotechnik/Sicherheit/fuenf-sicherheitsregeln.md",
+      "tags": ["sicherheit"]
+    },
+    {
+      "id": "elek-schutz-004",
+      "topic_slug": "elektro-schutz",
+      "type": "fillblank",
+      "text": "A FI is a __ device.",
+      "answers": [["fehlerstromschutz", "rcd"]],
+      "explanation": "FI is residual current device.",
+      "source_ref": "internal:Library/Elektrotechnik/Schutztechnik/rcd-fi-fehlerstromschutz.md",
+      "tags": ["schutz"]
+    },
+    {
+      "id": "elek-schutz-005",
+      "topic_slug": "elektro-schutz",
+      "type": "matching",
+      "prompt": "Match device to role.",
+      "left": ["LS", "RCD", "SLS"],
+      "right": ["Overcurrent", "Residual current", "Selective main"],
+      "pairs": [[0, 0], [1, 1], [2, 2]],
+      "explanation": "Each device protects different faults.",
+      "source_ref": "internal:Library/Elektrotechnik/Schutztechnik/selektivitaet-sls.md",
+      "tags": ["schutz"]
+    },
+    {
+      "id": "it-backup-001",
+      "topic_slug": "it-backup",
+      "type": "multi",
+      "prompt": "Which are parts of 3-2-1?",
+      "options": ["3 copies", "2 media", "1 offsite", "1 backup only"],
+      "correct": [0, 1, 2],
+      "explanation": "3-2-1 means 3 copies, 2 media, 1 offsite.",
+      "source_ref": "internal:Library/IT-Systeme/Dienste/backupverfahren-3-2-1-generationenprinzip.md",
+      "tags": ["backup"]
+    },
+    {
+      "id": "it-backup-002",
+      "topic_slug": "it-backup",
+      "type": "single",
+      "prompt": "Which is NOT a backup by itself?",
+      "options": ["RAID", "Tape", "Snapshot", "Cloud copy"],
+      "correct": [0],
+      "explanation": "RAID is not a backup.",
+      "source_ref": "internal:Library/IT-Systeme/Dienste/raid-grundlagen.md",
+      "tags": ["backup"]
+    },
+    {
+      "id": "it-backup-003",
+      "topic_slug": "it-backup",
+      "type": "truefalse",
+      "prompt": "Backups should be tested regularly.",
+      "correct": true,
+      "explanation": "Test restores are required.",
+      "source_ref": "internal:Library/IT-Systeme/Dienste/backupverfahren-3-2-1-generationenprinzip.md",
+      "tags": ["backup"]
+    },
+    {
+      "id": "it-backup-004",
+      "topic_slug": "it-backup",
+      "type": "fillblank",
+      "text": "3-2-1 means __ copies, __ media, __ offsite.",
+      "answers": [["3"], ["2"], ["1"]],
+      "explanation": "3-2-1 rule.",
+      "source_ref": "internal:Library/IT-Systeme/Dienste/backupverfahren-3-2-1-generationenprinzip.md",
+      "tags": ["backup"]
+    },
+    {
+      "id": "it-backup-005",
+      "topic_slug": "it-backup",
+      "type": "matching",
+      "prompt": "Match term to meaning.",
+      "left": ["Full backup", "Incremental", "Differential"],
+      "right": ["All data", "Changes since last backup", "Changes since last full"],
+      "pairs": [[0, 0], [1, 1], [2, 2]],
+      "explanation": "Common backup types.",
+      "source_ref": "internal:Library/IT-Systeme/Dienste/backupverfahren-3-2-1-generationenprinzip.md",
+      "tags": ["backup"]
+    },
+    {
+      "id": "it-backup-006",
+      "topic_slug": "it-backup",
+      "type": "ordering",
+      "prompt": "Order a basic backup workflow.",
+      "items": ["Plan", "Run backup", "Test restore"],
+      "correct_order": [0, 1, 2],
+      "explanation": "Plan, run, then test.",
+      "source_ref": "internal:Library/IT-Systeme/Dienste/backupverfahren-3-2-1-generationenprinzip.md",
+      "tags": ["backup"]
+    },
+    {
+      "id": "netz-vlan-006",
+      "topic_slug": "netzwerk-vlan",
+      "type": "guessword",
+      "prompt": "Guess the word: Device that forwards frames based on MAC table.",
+      "answers": ["switch"],
+      "explanation": "Switches forward frames using MAC table.",
+      "source_ref": "internal:Library/Netzwerk/Switching/switching-mac-table.md",
+      "tags": ["switch"]
+    },
+    {
+      "id": "elek-schutz-006",
+      "topic_slug": "elektro-schutz",
+      "type": "explainterm",
+      "prompt": "Explain the term RCD in one sentence.",
+      "keywords": ["residual", "current", "protection"],
+      "explanation": "RCD protects against residual current.",
+      "source_ref": "internal:Library/Elektrotechnik/Schutztechnik/rcd-fi-fehlerstromschutz.md",
+      "tags": ["rcd"]
+    },
+    {
+      "id": "netz-vlan-err1",
+      "topic_slug": "netzwerk-vlan",
+      "type": "multi",
+      "prompt": "This has no correct array to trigger error.",
+      "options": ["A", "B", "C"]
+    },
+    {
+      "id": "netz-vlan-err2",
+      "topic_slug": "netzwerk-vlan",
+      "type": "unknown",
+      "prompt": "Unknown type should trigger error."
+    }
+  ]
+}

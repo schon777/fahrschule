@@ -1,0 +1,19 @@
+Leitfragen:
+
+1. Welche Anforderungen werden an VoIP gestellt (vergleiche ISDN, POTS)?
+
+2. Vorteile/Nachteile ggü. klassischer Telefonie?
+
+3. Wie wird Sprache digitalisiert? Erläutern Sie die Funktionsweise der Analog/Digital bzw Digital/Analog-Wandlung!
+
+4. Welche Signalisierungsprotokolle gibt es bei VoIP (Beispiele)?
+
+5. Welche Transportprotokolle werden eingesetzt (Beispiele)?
+
+6. Erläutern Sie das ENUM-Verfahren! Wozu wird es eingesetzt?
+
+7. Was sind MOS-Werte?
+
+8. Welche Codecs werden bei VoIP häufig verwendet? Nennen Sie deren Eckdaten.
+
+9. Was verbirgt sich hinter den Begriffen Latenz und Jitter in Bezug auf VoIP? Welche Maßnahme(n) verwendet VoIP dagegen? 

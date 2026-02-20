@@ -1,0 +1,16 @@
+{
+  "jwt_secret": "change-this-secret",
+  "token_exp_days": 7,
+  "users": [
+    {
+      "username": "Alwin",
+      "salt": "8YOQl7fZiB5SbxFZl2W6rw==",
+      "hash": "S3h1MGQsLtYXPAXpm+UMVb3pk7CMl6Gzi4F9lqhc4K8="
+    },
+    {
+      "username": "Patrick",
+      "salt": "8vii1Qte1jl5bjlQRGsutw==",
+      "hash": "gEe0wlmUc3TlLiCC+Kqq/SwqGd2B0yEgvOz0UNMDW7I="
+    }
+  ]
+}

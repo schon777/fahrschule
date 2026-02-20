@@ -1,0 +1,13 @@
+Inhalte:
+Anforderung an Sicherungseinrichtungen
+
+DAS / direct attached storage
+
+NAS / network attached storage
+
+SAN / storage area network
+
+Fibre Channel (FC)
+
+iSCSI
+

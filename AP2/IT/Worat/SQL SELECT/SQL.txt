@@ -1,0 +1,77 @@
+CREATE DATABASE IF NOT EXISTS TicketsystemJOIN;
+USE TicketsystemJOIN;
+CREATE TABLE kunde (
+  Kundennummer int(11) NOT NULL,
+  Name varchar(20) DEFAULT NULL,
+  Standort varchar(20) DEFAULT NULL,
+  Typ varchar(20) DEFAULT NULL,
+  PRIMARY KEY (Kundennummer)
+);
+
+INSERT INTO kunde VALUES 
+(1,'Finn AG','Essen','Premium'),
+(2,'Medkit','Essen','Privat'),
+(3,'Demaher','Mülheim','Privat'),
+(4,'Kremm GmbH','Dortmund','Geschäftlich'),
+(5,'Janitz','Duisburg','Privat')
+;
+
+CREATE TABLE ticket (
+  Ticketnummer int(11) NOT NULL AUTO_INCREMENT,
+  Anfrageart varchar(15) DEFAULT NULL,
+  Problembeschreibung varchar(30) DEFAULT NULL,
+  Dringlichkeit smallint(2) DEFAULT NULL,
+  Erstellungsdatum date DEFAULT NULL,
+  Status varchar(15) DEFAULT NULL,
+  Kundennummer int(11) NOT NULL,
+  PRIMARY KEY (Ticketnummer),
+  FOREIGN KEY (Kundennummer) REFERENCES kunde (Kundennummer) 
+);
+
+INSERT INTO ticket VALUES (1,'Kundenanfrage','Neuer Laptop',3,'2022-01-10','offen', 2),
+(2,'Stoerungsfall','Rechner stuerzt ab',2,'2022-01-13',NULL, 1),
+(3,'Stoerungsfall','Virus',1,'2022-01-07','erledigt', 1),
+(4,'Kundenanfrage','Drucken aus Word',4,'2022-01-08','offen', 5),
+(5,'Statusmeldung','Datensicherung erfolgreich',4,'2022-01-15','erledigt', 3),
+(6,'Kundenanfrage','Aus Excel drucken',4,'2022-01-15','erledigt', 5);
+
+
+CREATE TABLE mitarbeiter (
+  Personalnummer int(10) unsigned NOT NULL AUTO_INCREMENT,
+  Vorname varchar(20) DEFAULT NULL,
+  Nachname varchar(20) DEFAULT NULL,
+  Wohnort varchar(20) DEFAULT NULL,
+  Supportlevel varchar(45) DEFAULT NULL,
+  Kenntnisse varchar(45) DEFAULT NULL,
+  Gehalt double DEFAULT NULL,
+  PRIMARY KEY (`Personalnummer`)
+) ;
+
+INSERT INTO mitarbeiter VALUES (1,'Marcel','Berger','Dortmund','3','Cisco',5000),
+(2,'Jonas','Gruenhaupt','Muelheim','1','Desktoprechner und Monitore',1500),
+(3,'Peter','Moellemann','Essen','1','Monitore',1700),
+(4,'Franziska','Britz','Dortmund','2','Cisco',2500),
+(5,'Mara','Keller','Essen',NULL,'Drucker',2100),
+(6,'Thomas','Prim','Duisburg','2','Drucker und Montore',2100);
+
+CREATE TABLE ticketbearbeitung (
+  Bearbeitungsnummer int(11) NOT NULL,
+  Personalnummer int(10) unsigned NOT NULL,
+  Ticketnummer int(11) NOT NULL,
+  Aktion varchar(20) DEFAULT NULL,
+  Datum date DEFAULT NULL,
+  Uhrzeit varchar(8) DEFAULT NULL,
+  PRIMARY KEY (Bearbeitungsnummer),
+  FOREIGN KEY (Personalnummer) REFERENCES mitarbeiter (Personalnummer),
+  FOREIGN KEY (Ticketnummer) REFERENCES ticket (Ticketnummer) 
+);
+
+INSERT INTO ticketbearbeitung VALUES 
+(1,1,2,'Rechner geprüft','2022-02-23','10:45:00'),
+(2,1,6,'Druckbutton in Excel','2022-03-17','13:18:00'),
+(3,4,2,'Rechner geprüft','2022-02-23','13:27:00'),
+(4,4,3,'Server vom Netz geno','2022-03-16','10:03:00'),
+(5,4,3,'Antivirenprogramm ak','2022-03-16','10:30:00'),
+(6,4,3,'Server wieder ins Ne','2022-03-16','11:00:00'),
+(7,3,1,'Rechner fertiggestel','2022-03-27','12:13:00'),
+(8,5,2,'Rechner repariert','2022-02-23','18:07:00');

@@ -1,0 +1,5 @@
+inkrementelles Backup
+
+differentielles Backup
+
+Generationenprinzip

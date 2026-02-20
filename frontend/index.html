@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AP2 Trainer</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">AP2 Trainer</div>
+      <nav class="nav">
+        <button class="nav-btn" data-route="dashboard">Dashboard</button>
+        <button class="nav-btn" data-route="quiz">Quiz</button>
+        <button class="nav-btn" data-route="calendar">Calendar</button>
+        <button class="nav-btn" data-route="builder">Builder</button>
+      </nav>
+      <div class="top-actions">
+        <button id="toggle-debug" class="ghost">Debug</button>
+      </div>
+    </header>
+
+    <main id="app" class="app">
+      <section id="page-dashboard" class="page">
+        <div class="grid">
+          <div class="card">
+            <h2>Overview</h2>
+            <div id="countdown" class="countdown"></div>
+            <div class="stats-row">
+              <div>
+                <div class="stat-label">ISO Week</div>
+                <div id="iso-week" class="stat-value">-</div>
+              </div>
+              <div>
+                <div class="stat-label">Questions</div>
+                <div id="total-questions" class="stat-value">-</div>
+              </div>
+              <div>
+                <div class="stat-label">Answered</div>
+                <div id="answered-questions" class="stat-value">-</div>
+              </div>
+            </div>
+            <div id="warning" class="warning hidden"></div>
+          </div>
+          <div class="card">
+            <h2>Learning Speed (This Week)</h2>
+            <div class="stats-row">
+              <div>
+                <div class="stat-label">Attempts</div>
+                <div id="week-attempts" class="stat-value">-</div>
+              </div>
+              <div>
+                <div class="stat-label">Correct</div>
+                <div id="week-correct" class="stat-value">-</div>
+              </div>
+              <div>
+                <div class="stat-label">Avg Time</div>
+                <div id="week-avg-time" class="stat-value">-</div>
+              </div>
+            </div>
+            <div class="forecast">
+              <div class="stat-label">Forecast</div>
+              <div id="forecast" class="stat-value">-</div>
+            </div>
+          </div>
+          <div class="card">
+            <h2>Upcoming Appointments</h2>
+            <div id="appointments-summary" class="appointments"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Topics</h2>
+          <div class="table-wrap">
+            <table class="topics-table">
+              <thead>
+                <tr>
+                  <th>Topic</th>
+                  <th>Total</th>
+                  <th>Done %</th>
+                  <th>Correct %</th>
+                  <th>Remaining %</th>
+                  <th>Share %</th>
+                </tr>
+              </thead>
+              <tbody id="topics-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="page-quiz" class="page hidden">
+        <div class="card">
+          <div class="quiz-header">
+            <h2>Quiz</h2>
+            <button id="next-question" class="primary">Next Question</button>
+          </div>
+          <div class="quiz-controls">
+            <label>
+              Topic
+              <select id="quiz-topic"></select>
+            </label>
+            <label>
+              Quiz Mode
+              <select id="quiz-mode"></select>
+            </label>
+          </div>
+          <div id="quiz-meta" class="muted"></div>
+          <form id="quiz-form" class="quiz-form"></form>
+          <div class="quiz-actions">
+            <button id="submit-answer" class="primary" type="button">Submit</button>
+            <button id="reset-quiz" class="ghost" type="button">Reset</button>
+          </div>
+          <div id="quiz-result" class="result"></div>
+        </div>
+      </section>
+
+      <section id="page-calendar" class="page hidden">
+        <div class="card">
+          <h2>Calendar</h2>
+          <p class="muted">List view with localStorage.</p>
+          <div class="calendar-header">
+            <button id="cal-prev" class="ghost" type="button">Prev</button>
+            <div id="cal-label" class="calendar-label">Month</div>
+            <button id="cal-next" class="ghost" type="button">Next</button>
+          </div>
+          <div class="calendar-grid">
+            <div class="calendar-weekdays">
+              <div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div><div>Sun</div>
+            </div>
+            <div id="calendar-days" class="calendar-days"></div>
+          </div>
+          <form id="appointment-form" class="appointment-form">
+            <input id="appt-id" type="hidden" />
+            <label>
+              Title
+              <input id="appt-title" type="text" required />
+            </label>
+            <label>
+              Start
+              <input id="appt-start" type="datetime-local" required />
+            </label>
+            <label>
+              End (optional)
+              <input id="appt-end" type="datetime-local" />
+            </label>
+            <label>
+              Category (optional)
+              <input id="appt-category" type="text" />
+            </label>
+            <label>
+              Notes (optional)
+              <textarea id="appt-notes" rows="3"></textarea>
+            </label>
+            <div class="form-actions">
+              <button id="appt-save" class="primary" type="submit">Save</button>
+              <button id="appt-cancel" class="ghost" type="button">Cancel</button>
+            </div>
+          </form>
+          <div class="calendar-list">
+            <h3>Appointments</h3>
+            <div id="appointments-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="page-builder" class="page hidden">
+        <div class="card">
+          <h2>Question Builder / Import</h2>
+          <div class="builder-grid">
+            <div class="builder-block">
+              <h3>Import</h3>
+              <input id="import-file" type="file" accept=".json" />
+              <label class="toggle">
+                <input type="checkbox" id="import-replace" />
+                <span>Replace duplicates</span>
+              </label>
+              <div class="builder-actions">
+                <button id="import-parse" class="ghost" type="button">Preview</button>
+                <button id="import-apply" class="primary" type="button">Import</button>
+                <button id="import-cancel" class="ghost" type="button">Cancel</button>
+              </div>
+              <div id="import-preview" class="builder-preview"></div>
+            </div>
+            <div class="builder-block">
+              <h3>Create Question</h3>
+              <form id="builder-form" class="builder-form">
+                <label>
+                  Topic
+                  <select id="builder-topic"></select>
+                </label>
+                <label>
+                  New Topic (optional slug)
+                  <input id="builder-topic-new" type="text" placeholder="netzwerk-vlan" />
+                </label>
+                <label>
+                  Type
+                  <select id="builder-type"></select>
+                </label>
+                <label>
+                  Question ID
+                  <input id="builder-id" type="text" placeholder="custom-001" />
+                </label>
+                <label>
+                  Prompt
+                  <textarea id="builder-prompt" rows="3"></textarea>
+                </label>
+                <label>
+                  Explanation
+                  <textarea id="builder-explanation" rows="2"></textarea>
+                </label>
+                <label>
+                  Source Ref
+                  <input id="builder-source" type="text" placeholder="internal:Library/..." />
+                </label>
+                <label>
+                  Tags (comma)
+                  <input id="builder-tags" type="text" />
+                </label>
+                <div id="builder-dynamic" class="builder-dynamic"></div>
+                <div class="builder-actions">
+                  <button id="builder-save" class="primary" type="submit">Save Question</button>
+                  <button id="builder-try" class="ghost" type="button">Try This Question</button>
+                </div>
+                <div id="builder-status" class="muted"></div>
+              </form>
+            </div>
+          </div>
+          <div class="builder-export">
+            <button id="export-questions" class="ghost" type="button">Export Questions</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <aside id="debug-panel" class="debug-panel hidden">
+      <div class="debug-header">
+        <div>Debug Panel</div>
+        <div class="debug-actions">
+          <button id="debug-export" class="ghost">Export</button>
+          <button id="debug-clear" class="ghost">Clear</button>
+          <button id="debug-reset" class="ghost">Reset Demo</button>
+          <button id="debug-close" class="ghost">Close</button>
+        </div>
+      </div>
+      <div class="debug-body">
+        <div class="debug-section">
+          <div class="debug-title">State</div>
+          <pre id="debug-state"></pre>
+        </div>
+        <div class="debug-section">
+          <div class="debug-title">Storage Summary</div>
+          <pre id="debug-storage"></pre>
+        </div>
+        <div class="debug-section">
+          <div class="debug-title">Last Error</div>
+          <pre id="debug-error">None</pre>
+        </div>
+        <div class="debug-section">
+          <div class="debug-title">Logs</div>
+          <pre id="debug-logs"></pre>
+        </div>
+        <div class="debug-section">
+          <label class="toggle">
+            <input type="checkbox" id="debug-test-mode" />
+            <span>Test Mode</span>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="debug-latency" />
+            <span>Fake Latency</span>
+          </label>
+        </div>
+      </div>
+    </aside>
+
+  <div id="error-banner" class="error-banner hidden"></div>
+  <div id="login-overlay" class="login-overlay hidden">
+    <div class="login-card">
+      <h2>Login</h2>
+      <form id="login-form">
+        <label>
+          Username
+          <input id="login-username" type="text" autocomplete="username" required />
+        </label>
+        <label>
+          Password
+          <input id="login-password" type="password" autocomplete="current-password" required />
+        </label>
+        <div class="login-actions">
+          <button class="primary" type="submit">Login</button>
+        </div>
+        <div id="login-status" class="muted"></div>
+      </form>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

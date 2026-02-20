@@ -1,0 +1,3 @@
+Grundlagen Wechselspannung
+Bei einer Wechselspannung ändert sich periodisch die Polarität der Spannung. Aus dieser Änderung folgt somit ein Wechselstrom, der ebenfalls periodisch seine Richtung ändert. Die Wechselspannung kann zum Beispiel an einer Steckdose gemessen werden. Der Effektivwert der Wechselspannung beträgt in Deutschland 230V, die Frequenz 50Hz.
+

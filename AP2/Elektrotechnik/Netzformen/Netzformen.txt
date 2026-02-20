@@ -1,0 +1,10 @@
+Netzformen
+Hervorgehoben
+Die Arten der in Europa gebräuchlichen Netzausführung für Dreiphasenwechselstrom sind von der International Electrotechnical Commission (IEC) festgelegt und unterteilen sich in:
+
+TN-System (frz. Terre Neutre)
+TN-C-System
+TN-S-System
+TN-C-S-System
+TT-System (frz. Terre Terre)
+IT-System (frz. Isolé Terre)

@@ -1,0 +1,8 @@
+Grundlagen ET (Wiederholung)
+Abschnittsübersicht
+Die Elektrotechnik bildet das fundamentale Rückgrat der modernen Technologie und ist von unschätzbarem Wert für Systemelektroniker. Als Experten in diesem Fachbereich sind sie maßgeblich daran beteiligt, elektronische Systeme zu entwickeln, zu warten und zu reparieren. Um dieses anspruchsvolle Tätigkeitsfeld erfolgreich zu meistern, ist ein fundiertes Verständnis der elektrotechnischen Grundlagen von größter Bedeutung.
+
+Diese Einleitung gibt einen Überblick über die essentiellen Konzepte, die jeden Systemelektroniker begleiten, angefangen von den elementaren Gesetzen der Elektrotechnik bis hin zu den praktischen Anwendungen in der heutigen Hightech-Welt. Wir werden uns mit elektrischen Größen, Schaltungen, elektrischen Bauelementen und deren Zusammenspiel beschäftigen. Des Weiteren werden wir die Wechselstromtechnik, die digitale Elektronik und die Sicherheitsaspekte berücksichtigen, die für einen erfolgreichen Systemelektroniker von zentraler Bedeutung sind.
+
+Das Verständnis dieser Grundlagen wird Ihnen nicht nur dabei helfen, komplexe elektronische Systeme zu entwerfen und zu realisieren, sondern auch mögliche Fehler zu identifizieren und effiziente Lösungsansätze zu entwickeln. Elektronische Systeme durchdringen nahezu alle Bereiche des modernen Lebens, sei es in der Kommunikationstechnologie, der Automatisierung oder der Medizintechnik. Als Systemelektroniker sind Sie eine treibende Kraft für Innovation und Fortschritt.
+

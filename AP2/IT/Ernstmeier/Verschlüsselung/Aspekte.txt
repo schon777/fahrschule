@@ -1,0 +1,8 @@
+Leitfragen/Aspekte:
+
+Was ist: Kryptologie, Kryptogramme, Kryptoanalyse?
+Erläutern Sie den Caesar-Code!
+Was verbirgt sich hinter folgenden Abkürzungen? DES, AES, RSA
+Unterscheiden und erklären Sie: symmetrische und asymmetrische Verschlüsselung, Hybride Verfahren (privater und öffentlicher Schlüssel, Schlüsselraum)
+Erläutern Sie die digitale Signatur und deren Funktionsweise.
+Was war noch gleich ein Hash-Wert?

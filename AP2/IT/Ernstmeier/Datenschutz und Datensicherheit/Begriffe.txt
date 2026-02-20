@@ -1,0 +1,7 @@
+Authentizität
+Integrität
+Vertraulichkeit  ... von Daten
+
+Hash-Wert
+
+Digitale Signatur

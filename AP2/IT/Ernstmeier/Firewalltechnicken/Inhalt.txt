@@ -1,0 +1,9 @@
+Bedrohungen
+Desktopfirewall
+Portfilter - Portknocking
+Paketfilter
+Stateful Packet Inspection
+Applications Layer Gateway
+Deep Paket Inspection
+DMZ
+(NAT)
