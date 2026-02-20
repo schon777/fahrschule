@@ -550,6 +550,7 @@ def on_startup():
 
 @app.get("/health")
 def health():
+    print("health check", datetime.now(timezone.utc).isoformat())
     return {"status": "ok"}
 
 
