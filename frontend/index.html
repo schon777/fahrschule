@@ -14,7 +14,6 @@
         <button class="nav-btn" data-route="quiz">Quiz</button>
         <button class="nav-btn" data-route="calendar">Calendar</button>
         <button class="nav-btn" data-route="builder">Builder</button>
-        <button class="nav-btn" data-route="ai">AI</button>
       </nav>
       <div class="top-actions">
         <button id="toggle-debug" class="ghost">Debug</button>
@@ -233,53 +232,6 @@
         </div>
       </section>
 
-      <section id="page-ai" class="page hidden">
-        <div class="card">
-          <h2>AI Assistant</h2>
-          <div class="ai-grid">
-            <div class="ai-block">
-              <h3>Ask / Summarize</h3>
-              <textarea id="ai-prompt" rows="4" placeholder="Ask a question or paste text to summarize..."></textarea>
-              <div class="ai-actions">
-                <button id="ai-ask" class="primary" type="button">Ask</button>
-                <button id="ai-summarize" class="ghost" type="button">Summarize</button>
-              </div>
-              <div id="ai-response" class="ai-response"></div>
-            </div>
-            <div class="ai-block">
-              <h3>Browse (Allowlist)</h3>
-              <input id="ai-url" type="text" placeholder="https://example.com" />
-              <input id="ai-query" type="text" placeholder="What should I extract?" />
-              <div class="ai-actions">
-                <button id="ai-browse" class="primary" type="button">Browse</button>
-              </div>
-              <div id="ai-browse-response" class="ai-response"></div>
-            </div>
-            <div class="ai-block">
-              <h3>Upload Materials</h3>
-              <input id="ai-upload" type="file" accept=".pdf,.txt,.md,.docx,.html" />
-              <div class="ai-actions">
-                <button id="ai-upload-btn" class="primary" type="button">Ingest</button>
-              </div>
-              <div id="ai-upload-status" class="ai-response"></div>
-            </div>
-            <div class="ai-block">
-              <h3>Generate Quiz</h3>
-              <input id="ai-quiz-topic" type="text" placeholder="Topic (e.g. VLAN)" />
-              <select id="ai-quiz-difficulty">
-                <option value="easy">easy</option>
-                <option value="medium" selected>medium</option>
-                <option value="hard">hard</option>
-              </select>
-              <input id="ai-quiz-count" type="number" min="1" max="10" value="5" />
-              <div class="ai-actions">
-                <button id="ai-quiz-generate" class="primary" type="button">Generate</button>
-              </div>
-              <div id="ai-quiz-output" class="ai-response"></div>
-            </div>
-          </div>
-        </div>
-      </section>
     </main>
 
     <aside id="debug-panel" class="debug-panel hidden">

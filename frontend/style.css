@@ -402,49 +402,6 @@ body {
   margin-top: 12px;
 }
 
-.ai-grid {
-  display: grid;
-  gap: 16px;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-}
-
-.ai-block {
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 12px;
-  background: #fff;
-  display: grid;
-  gap: 10px;
-}
-
-.ai-block input,
-.ai-block textarea,
-.ai-block select {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 8px;
-  font-family: inherit;
-  font-size: 14px;
-}
-
-.ai-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.ai-response {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 8px;
-  background: #f6f1e7;
-  min-height: 60px;
-  white-space: pre-wrap;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
-    monospace;
-  font-size: 12px;
-}
-
 .result {
   margin-top: 12px;
   padding: 12px;
