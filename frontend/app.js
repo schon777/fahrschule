@@ -564,9 +564,66 @@
       setSubmitEnabled(false);
     }
 
+    form.innerHTML += `
+      <div class="ai-widget">
+        <div class="ai-widget-title">Ask AI about this question</div>
+        <div class="ai-widget-row">
+          <input class="ai-input ai-question" type="text" placeholder="Ask a question about this topic..." />
+          <button class="ghost ai-ask-btn" type="button">Ask AI</button>
+        </div>
+        <input class="ai-input ai-url" type="text" placeholder="Optional URL for internet sources" />
+        <div class="ai-widget-answer"></div>
+      </div>
+    `;
+
     ui.quizForm.replaceWith(form);
     ui.quizForm = form;
+    bindAskAI(question);
     updateDebugPanel();
+  }
+
+  function buildLocalContext(question) {
+    return [
+      `Prompt: ${question.prompt || ""}`,
+      `Explanation: ${question.explanation || ""}`,
+      `Source: ${question.source_ref || ""}`,
+      `Type: ${question.type || ""}`
+    ].join("\n");
+  }
+
+  function bindAskAI(question) {
+    const askBtn = ui.quizForm.querySelector(".ai-ask-btn");
+    const askInput = ui.quizForm.querySelector(".ai-question");
+    const urlInput = ui.quizForm.querySelector(".ai-url");
+    const answerBox = ui.quizForm.querySelector(".ai-widget-answer");
+    if (!askBtn || !askInput || !answerBox) return;
+    askBtn.addEventListener("click", async () => {
+      const userQuestion = askInput.value.trim();
+      if (!userQuestion) {
+        answerBox.textContent = "Please enter a question.";
+        return;
+      }
+      answerBox.textContent = "Thinking...";
+      try {
+        const res = await apiFetch("/ai/ask", {
+          method: "POST",
+          body: JSON.stringify({
+            questionId: question.id,
+            topicId: question.topicId,
+            userQuestion,
+            localContext: buildLocalContext(question),
+            url: urlInput ? urlInput.value.trim() : ""
+          })
+        });
+        const label = res.sourceType ? `[${res.sourceType}] ` : "";
+        const citations = res.citations && res.citations.length
+          ? `\nSources: ${res.citations.join(", ")}`
+          : "";
+        answerBox.textContent = `${label}${res.answer || "No answer."}${citations}`;
+      } catch (error) {
+        answerBox.textContent = String(error);
+      }
+    });
   }
 
   async function submitAnswer() {
@@ -641,11 +698,27 @@
         return;
       }
       selected = values;
-      correct = values.every((val, idx) => {
-        const accepted = blanks[idx].map((a) => a.toLowerCase());
-        return accepted.includes(val.toLowerCase());
-      });
       expected = blanks.map((opts) => opts.join("/")).join(" | ");
+      ui.quizResult.textContent = "Checking answer...";
+      setSubmitEnabled(false);
+      const aiResult = await gradeWithAI({
+        mode: "fillblank",
+        question,
+        expectedAnswers: blanks.length === 1 ? blanks[0] : blanks.map((opts) => opts.join("/")),
+        userAnswer: values.join(" | ")
+      });
+      if (aiResult) {
+        correct = !!aiResult.correct;
+        expected = (aiResult.accepted_answers || []).join(", ") || expected;
+        ui.quizResult.textContent = `${correct ? "Correct" : "Incorrect"} | ${aiResult.feedback || ""}`;
+      } else {
+        const fallback = values.every((val, idx) => {
+          const accepted = blanks[idx].map((a) => a.toLowerCase());
+          return accepted.includes(val.toLowerCase());
+        });
+        correct = fallback;
+      }
+      setSubmitEnabled(true);
     } else if (type === "guess") {
       const input = ui.quizForm.querySelector("input[name='guess']");
       const value = input ? input.value.trim() : "";
@@ -654,9 +727,24 @@
         return;
       }
       selected = value;
-      const accepted = question.expectedAnswers.map((a) => a.toLowerCase());
-      correct = accepted.includes(value.toLowerCase());
       expected = question.expectedAnswers.join(", ");
+      ui.quizResult.textContent = "Checking answer...";
+      setSubmitEnabled(false);
+      const aiResult = await gradeWithAI({
+        mode: "guess",
+        question,
+        expectedAnswers: question.expectedAnswers,
+        userAnswer: value
+      });
+      if (aiResult) {
+        correct = !!aiResult.correct;
+        expected = (aiResult.accepted_answers || []).join(", ") || expected;
+        ui.quizResult.textContent = `${correct ? "Correct" : "Incorrect"} | ${aiResult.feedback || ""}`;
+      } else {
+        const accepted = question.expectedAnswers.map((a) => a.toLowerCase());
+        correct = accepted.includes(value.toLowerCase());
+      }
+      setSubmitEnabled(true);
     } else if (type === "ordering") {
       const items = question.items || [];
       const selections = items.map((_, index) => {
@@ -672,8 +760,31 @@
       correct = selected.every((val, idx) => val === expectedOrder[idx]);
       expected = expectedOrder.map((pos) => pos + 1).join(", ");
     } else if (type === "explain" || type === "exam") {
-      showSelfCheck(question, timeMs);
-      return;
+      const input = ui.quizForm.querySelector("textarea[name='free']");
+      const value = input ? input.value.trim() : "";
+      if (!value) {
+        showWarning("Please enter an answer.");
+        return;
+      }
+      selected = value;
+      ui.quizResult.textContent = "Checking answer...";
+      setSubmitEnabled(false);
+      const aiResult = await gradeWithAI({
+        mode: type,
+        question,
+        expectedAnswers: question.expectedAnswer ? [question.expectedAnswer] : [],
+        userAnswer: value
+      });
+      if (aiResult) {
+        correct = !!aiResult.correct;
+        expected = (aiResult.accepted_answers || []).join(", ");
+        ui.quizResult.textContent = `${correct ? "Correct" : "Incorrect"} | ${aiResult.feedback || ""}`;
+      } else {
+        showSelfCheck(question, timeMs);
+        setSubmitEnabled(true);
+        return;
+      }
+      setSubmitEnabled(true);
     } else {
       showWarning("This question type is not implemented yet.");
       logger.warn("quiz", "submit on unimplemented type", { type });
@@ -700,6 +811,27 @@
     });
     renderDashboard();
     updateDebugPanel();
+  }
+
+  async function gradeWithAI({ mode, question, expectedAnswers, userAnswer }) {
+    try {
+      const payload = {
+        mode,
+        questionId: question.id,
+        prompt: question.prompt,
+        expectedAnswers,
+        expectedAnswer: question.expectedAnswer,
+        userAnswer,
+        context: question.explanation || ""
+      };
+      return await apiFetch("/ai/grade", {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+    } catch (error) {
+      logger.error("ai", "grade failed", { error: String(error) });
+      return null;
+    }
   }
 
   function renderCalendar() {
