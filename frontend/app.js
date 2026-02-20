@@ -2210,7 +2210,7 @@
   }
 
   function getApiBase() {
-    return localStorage.getItem(STORAGE_KEYS.apiBase) || "http://localhost:8000";
+    return localStorage.getItem(STORAGE_KEYS.apiBase) || "/api";
   }
 
   async function apiFetch(path, options = {}, auth = true) {
