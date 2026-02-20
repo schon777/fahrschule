@@ -12,5 +12,12 @@
       "salt": "8vii1Qte1jl5bjlQRGsutw==",
       "hash": "gEe0wlmUc3TlLiCC+Kqq/SwqGd2B0yEgvOz0UNMDW7I="
     }
-  ]
+  ],
+  "ollama_base": "http://127.0.0.1:11434",
+  "ai_model_chat": "llama3.1:8b",
+  "ai_model_embed": "nomic-embed-text",
+  "ai_model_quiz": "mistral:7b",
+  "ai_model_grade": "qwen2.5:7b",
+  "ai_allowlist": ["wikipedia.org", "ihk.de", "docs.python.org", "developer.mozilla.org"],
+  "ai_browse_per_day": 30
 }

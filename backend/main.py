@@ -3,10 +3,19 @@ import hashlib
 import json
 import os
 import sqlite3
+import uuid
+import io
+import ipaddress
+import math
+import re
+import time
+import urllib.parse
+import urllib.request
+from html.parser import HTMLParser
 from datetime import datetime, timedelta, timezone
 
 import jwt
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException, Depends, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 
 BASE_DIR = os.path.dirname(__file__)
@@ -30,11 +39,199 @@ def load_config():
 
 CONFIG = load_config()
 
+OLLAMA_BASE = CONFIG.get("ollama_base", "http://127.0.0.1:11434")
+AI_MODELS = {
+    "chat": CONFIG.get("ai_model_chat", "llama3.1:8b"),
+    "embed": CONFIG.get("ai_model_embed", "nomic-embed-text"),
+    "quiz": CONFIG.get("ai_model_quiz", "mistral:7b"),
+    "grade": CONFIG.get("ai_model_grade", "qwen2.5:7b"),
+}
+AI_ALLOWLIST = CONFIG.get(
+    "ai_allowlist",
+    ["wikipedia.org", "ihk.de", "docs.python.org", "developer.mozilla.org"],
+)
+AI_BROWSE_MAX_PER_DAY = int(CONFIG.get("ai_browse_per_day", 30))
+
+_rate_limits = {}
+
+
+class HTMLTextExtractor(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self._chunks = []
+
+    def handle_data(self, data):
+        if data and data.strip():
+            self._chunks.append(data.strip())
+
+    def get_text(self):
+        return " ".join(self._chunks)
+
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def log_ai(user, action, detail):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO ai_logs (id, username, action, detail, created_at) VALUES (?, ?, ?, ?, ?)",
+        (
+            f"ailog_{uuid.uuid4().hex}",
+            user,
+            action,
+            json.dumps(detail) if isinstance(detail, (dict, list)) else str(detail),
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def check_rate_limit(user, action):
+    if action != "browse":
+        return
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    key = (user, action, today)
+    current = _rate_limits.get(key, 0)
+    if current >= AI_BROWSE_MAX_PER_DAY:
+        raise HTTPException(status_code=429, detail="Browse rate limit reached.")
+    _rate_limits[key] = current + 1
+
+
+def is_allowed_url(url):
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = parsed.hostname or ""
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            return False
+        return True
+    except ValueError:
+        pass
+    host = host.lower()
+    return any(host == d or host.endswith(f".{d}") for d in AI_ALLOWLIST)
+
+
+def fetch_url_text(url, timeout=10):
+    if not is_allowed_url(url):
+        raise HTTPException(status_code=403, detail="URL not allowed")
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "AP2-AI-Browser/1.0"},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read()
+        encoding = resp.headers.get_content_charset() or "utf-8"
+        html = raw.decode(encoding, errors="ignore")
+    parser = HTMLTextExtractor()
+    parser.feed(html)
+    text = parser.get_text()
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def ollama_request(path, payload, timeout=60):
+    url = f"{OLLAMA_BASE}{path}"
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def ollama_generate(prompt, model, system=None, temperature=0.2):
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "stream": False,
+        "options": {"temperature": temperature},
+    }
+    if system:
+        payload["system"] = system
+    result = ollama_request("/api/generate", payload)
+    return result.get("response", "").strip()
+
+
+def ollama_embed(text, model=None):
+    payload = {"model": model or AI_MODELS["embed"], "prompt": text}
+    result = ollama_request("/api/embeddings", payload)
+    return result.get("embedding", [])
+
+
+def chunk_text(text, max_chars=1200, overlap=200):
+    if not text:
+        return []
+    chunks = []
+    start = 0
+    length = len(text)
+    while start < length:
+        end = min(start + max_chars, length)
+        chunk = text[start:end]
+        chunks.append(chunk)
+        if end == length:
+            break
+        start = max(0, end - overlap)
+    return chunks
+
+
+def cosine_similarity(a, b):
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def retrieve_chunks(query, top_k=5):
+    query_emb = ollama_embed(query)
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT id, doc_id, text, embedding FROM chunks")
+    scored = []
+    for row in cur.fetchall():
+        emb = json.loads(row["embedding"]) if row["embedding"] else []
+        score = cosine_similarity(query_emb, emb)
+        scored.append((score, row["id"], row["doc_id"], row["text"]))
+    conn.close()
+    scored.sort(reverse=True, key=lambda x: x[0])
+    top = scored[:top_k]
+    return [
+        {"score": s, "chunk_id": cid, "doc_id": did, "text": txt}
+        for s, cid, did, txt in top
+    ]
+
+
+def extract_text_from_upload(file: UploadFile):
+    filename = file.filename or "upload"
+    content_type = file.content_type or "application/octet-stream"
+    raw = file.file.read()
+    sha256 = hashlib.sha256(raw).hexdigest()
+    ext = os.path.splitext(filename)[1].lower()
+    if ext in (".txt", ".md"):
+        return raw.decode("utf-8", errors="ignore"), content_type, sha256
+    if ext in (".html", ".htm"):
+        parser = HTMLTextExtractor()
+        parser.feed(raw.decode("utf-8", errors="ignore"))
+        return parser.get_text(), content_type, sha256
+    if ext == ".pdf":
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(raw))
+        pages = [page.extract_text() or "" for page in reader.pages]
+        return "\n".join(pages), content_type, sha256
+    if ext == ".docx":
+        import docx
+
+        doc = docx.Document(io.BytesIO(raw))
+        return "\n".join([p.text for p in doc.paragraphs]), content_type, sha256
+    raise HTTPException(status_code=400, detail="Unsupported file type")
 
 
 def init_db():
@@ -86,6 +283,39 @@ def init_db():
             end TEXT,
             notes TEXT,
             category TEXT
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS documents (
+            id TEXT PRIMARY KEY,
+            filename TEXT,
+            sha256 TEXT,
+            content_type TEXT,
+            uploaded_at TEXT
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS chunks (
+            id TEXT PRIMARY KEY,
+            doc_id TEXT,
+            chunk_index INTEGER,
+            text TEXT,
+            embedding TEXT
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ai_logs (
+            id TEXT PRIMARY KEY,
+            username TEXT,
+            action TEXT,
+            detail TEXT,
+            created_at TEXT
         )
         """
     )
@@ -967,3 +1197,190 @@ def delete_appointment(appt_id: str, user=Depends(get_current_user)):
     conn.commit()
     conn.close()
     return {"status": "deleted"}
+
+
+@app.post("/ai/ingest")
+def ai_ingest(file: UploadFile = File(...), user=Depends(get_current_user)):
+    text, content_type, sha256 = extract_text_from_upload(file)
+    if not text or len(text) < 20:
+        raise HTTPException(status_code=400, detail="Empty document")
+    doc_id = f"doc_{uuid.uuid4().hex}"
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO documents (id, filename, sha256, content_type, uploaded_at) VALUES (?, ?, ?, ?, ?)",
+        (doc_id, file.filename, sha256, content_type, datetime.now(timezone.utc).isoformat()),
+    )
+    chunks = chunk_text(text)
+    for idx, chunk in enumerate(chunks):
+        chunk_id = f"chunk_{uuid.uuid4().hex}"
+        emb = ollama_embed(chunk)
+        cur.execute(
+            "INSERT INTO chunks (id, doc_id, chunk_index, text, embedding) VALUES (?, ?, ?, ?, ?)",
+            (chunk_id, doc_id, idx, chunk, json.dumps(emb)),
+        )
+    conn.commit()
+    conn.close()
+    log_ai(user, "ingest", {"doc_id": doc_id, "chunks": len(chunks)})
+    return {"status": "ok", "doc_id": doc_id, "chunks": len(chunks)}
+
+
+@app.post("/ai/ask")
+def ai_ask(data: dict, user=Depends(get_current_user)):
+    query = data.get("query", "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Missing query")
+    top_k = int(data.get("top_k", 5))
+    retrieved = retrieve_chunks(query, top_k=top_k)
+    context = "\n\n".join(
+        [f"[{r['doc_id']}::{r['chunk_id']}] {r['text']}" for r in retrieved]
+    )
+    system = (
+        "You are a study assistant. Use ONLY the provided context. "
+        "If context is insufficient, say so. Keep answers concise."
+    )
+    prompt = f"Question: {query}\n\nContext:\n{context}\n\nAnswer:"
+    answer = ollama_generate(prompt, AI_MODELS["chat"], system=system)
+    log_ai(user, "ask", {"query": query})
+    return {"answer": answer, "citations": [{"doc_id": r["doc_id"], "chunk_id": r["chunk_id"]} for r in retrieved]}
+
+
+@app.post("/ai/summarize")
+def ai_summarize(data: dict, user=Depends(get_current_user)):
+    text = data.get("text")
+    doc_id = data.get("doc_id")
+    if not text and not doc_id:
+        raise HTTPException(status_code=400, detail="Provide text or doc_id")
+    if doc_id:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT text FROM chunks WHERE doc_id = ? ORDER BY chunk_index", (doc_id,))
+        text = "\n".join([row["text"] for row in cur.fetchall()][:6])
+        conn.close()
+    system = "Summarize clearly in bullet points."
+    prompt = f"Summarize:\n{text}"
+    summary = ollama_generate(prompt, AI_MODELS["chat"], system=system)
+    log_ai(user, "summarize", {"doc_id": doc_id})
+    return {"summary": summary}
+
+
+@app.post("/ai/generate_quiz")
+def ai_generate_quiz(data: dict, user=Depends(get_current_user)):
+    topic = data.get("topic", "").strip()
+    difficulty = data.get("difficulty", "medium")
+    count = int(data.get("count", 5))
+    store = bool(data.get("store", False))
+    if not topic:
+        raise HTTPException(status_code=400, detail="Missing topic")
+    system = "You output strict JSON only. No commentary."
+    prompt = (
+        f"Generate {count} quiz questions about {topic} at {difficulty} difficulty.\n"
+        "Use JSON array with objects: "
+        '{"id":"q_x","type":"single|multi|truefalse|fillblank|explain",'
+        '"prompt":"...",'
+        '"options":["A","B","C","D"] (only for single/multi),'
+        '"correct":[0] (for single/multi),'
+        '"correct":true/false (for truefalse),'
+        '"answers":["..."] (for fillblank),'
+        '"expectedAnswer":"..." (for explain),'
+        '"explanation":"..."}'
+    )
+    raw = ollama_generate(prompt, AI_MODELS["quiz"], system=system, temperature=0.3)
+    try:
+        questions = json.loads(raw)
+        if not isinstance(questions, list):
+            raise ValueError("Not a list")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Quiz parse failed: {exc}")
+    if store:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM topics WHERE id = ?", (topic,))
+        if not cur.fetchone():
+            cur.execute(
+                "INSERT INTO topics (id, name, topic_area) VALUES (?, ?, ?)",
+                (topic, topic.replace("-", " ").title(), ""),
+            )
+        for q in questions:
+            qid = q.get("id") or f"ai_{uuid.uuid4().hex[:8]}"
+            q["id"] = qid
+            q["topicId"] = topic
+            cur.execute(
+                "INSERT OR REPLACE INTO questions (id, topic_id, type, data, explanation, source_ref, tags) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    qid,
+                    topic,
+                    q.get("type", "single"),
+                    json.dumps(q),
+                    q.get("explanation", ""),
+                    "ai:generated",
+                    json.dumps(q.get("tags", [])),
+                ),
+            )
+        conn.commit()
+        conn.close()
+    log_ai(user, "generate_quiz", {"topic": topic, "count": count})
+    return {"questions": questions, "stored": store}
+
+
+def grade_deterministic(question, answer):
+    q_type = question.get("type")
+    if q_type == "single":
+        return int(answer) == int(question.get("correctIndex"))
+    if q_type == "multi":
+        correct = set(question.get("correctIndexes", []))
+        given = set(answer if isinstance(answer, list) else [])
+        return correct == given
+    if q_type == "truefalse":
+        return bool(answer) == bool(question.get("correctBoolean"))
+    if q_type == "fillblank":
+        expected = [str(a).strip().lower() for a in question.get("expectedAnswers", [])]
+        return str(answer).strip().lower() in expected
+    if q_type == "guess":
+        expected = [str(a).strip().lower() for a in question.get("expectedAnswers", [])]
+        return str(answer).strip().lower() in expected
+    if q_type == "ordering":
+        return answer == question.get("correct_order")
+    return None
+
+
+@app.post("/ai/grade_answer")
+def ai_grade_answer(data: dict, user=Depends(get_current_user)):
+    question_id = data.get("question_id")
+    answer = data.get("answer")
+    if not question_id:
+        raise HTTPException(status_code=400, detail="Missing question_id")
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT data FROM questions WHERE id = ?", (question_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Question not found")
+    question = json.loads(row["data"])
+    deterministic = grade_deterministic(question, answer)
+    if deterministic is not None:
+        return {"correct": deterministic, "confidence": 1.0, "needs_review": False}
+    system = "You are a strict grader. Return JSON with keys: correct (true/false), confidence (0-1), needs_review (true/false)."
+    prompt = f"Question: {question}\nAnswer: {answer}\nGrade now."
+    raw = ollama_generate(prompt, AI_MODELS["grade"], system=system, temperature=0.0)
+    try:
+        graded = json.loads(raw)
+    except Exception:
+        graded = {"correct": False, "confidence": 0.0, "needs_review": True}
+    return graded
+
+
+@app.post("/ai/browse")
+def ai_browse(data: dict, user=Depends(get_current_user)):
+    url = data.get("url")
+    query = data.get("query", "")
+    if not url:
+        raise HTTPException(status_code=400, detail="Missing url")
+    check_rate_limit(user, "browse")
+    text = fetch_url_text(url)
+    system = "Summarize or answer using the fetched page only. Be concise."
+    prompt = f"Query: {query}\n\nPage text:\n{text[:6000]}"
+    summary = ollama_generate(prompt, AI_MODELS["chat"], system=system, temperature=0.2)
+    log_ai(user, "browse", {"url": url})
+    return {"summary": summary, "source_url": url}

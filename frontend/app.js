@@ -40,7 +40,8 @@
       dashboard: document.getElementById("page-dashboard"),
       quiz: document.getElementById("page-quiz"),
       calendar: document.getElementById("page-calendar"),
-      builder: document.getElementById("page-builder")
+      builder: document.getElementById("page-builder"),
+      ai: document.getElementById("page-ai")
     },
     navButtons: document.querySelectorAll(".nav-btn"),
     toggleDebug: document.getElementById("toggle-debug"),
@@ -111,7 +112,23 @@
     calendarDays: document.getElementById("calendar-days"),
     calendarLabel: document.getElementById("cal-label"),
     calendarPrev: document.getElementById("cal-prev"),
-    calendarNext: document.getElementById("cal-next")
+    calendarNext: document.getElementById("cal-next"),
+    aiPrompt: document.getElementById("ai-prompt"),
+    aiAsk: document.getElementById("ai-ask"),
+    aiSummarize: document.getElementById("ai-summarize"),
+    aiResponse: document.getElementById("ai-response"),
+    aiUrl: document.getElementById("ai-url"),
+    aiQuery: document.getElementById("ai-query"),
+    aiBrowse: document.getElementById("ai-browse"),
+    aiBrowseResponse: document.getElementById("ai-browse-response"),
+    aiUpload: document.getElementById("ai-upload"),
+    aiUploadBtn: document.getElementById("ai-upload-btn"),
+    aiUploadStatus: document.getElementById("ai-upload-status"),
+    aiQuizTopic: document.getElementById("ai-quiz-topic"),
+    aiQuizDifficulty: document.getElementById("ai-quiz-difficulty"),
+    aiQuizCount: document.getElementById("ai-quiz-count"),
+    aiQuizGenerate: document.getElementById("ai-quiz-generate"),
+    aiQuizOutput: document.getElementById("ai-quiz-output")
   };
 
   let dataStore = { topics: [], questions: [] };
@@ -127,6 +144,7 @@
     bindQuiz();
     bindCalendar();
     bindBuilder();
+    bindAI();
     bindLogin();
     applyDebugFlags();
     setRoute("dashboard");
@@ -135,6 +153,84 @@
       ui.debugPanel.classList.remove("hidden");
     }
     logger.info("app", "init complete");
+  }
+
+  function bindAI() {
+    if (!ui.aiAsk) return;
+    ui.aiAsk.addEventListener("click", async () => {
+      const prompt = ui.aiPrompt.value.trim();
+      if (!prompt) return;
+      ui.aiResponse.textContent = "Thinking...";
+      try {
+        const res = await apiFetch("/ai/ask", {
+          method: "POST",
+          body: JSON.stringify({ query: prompt })
+        });
+        ui.aiResponse.textContent = res.answer || "No answer.";
+      } catch (error) {
+        ui.aiResponse.textContent = String(error);
+      }
+    });
+
+    ui.aiSummarize.addEventListener("click", async () => {
+      const prompt = ui.aiPrompt.value.trim();
+      if (!prompt) return;
+      ui.aiResponse.textContent = "Summarizing...";
+      try {
+        const res = await apiFetch("/ai/summarize", {
+          method: "POST",
+          body: JSON.stringify({ text: prompt })
+        });
+        ui.aiResponse.textContent = res.summary || "No summary.";
+      } catch (error) {
+        ui.aiResponse.textContent = String(error);
+      }
+    });
+
+    ui.aiBrowse.addEventListener("click", async () => {
+      const url = ui.aiUrl.value.trim();
+      const query = ui.aiQuery.value.trim();
+      if (!url) return;
+      ui.aiBrowseResponse.textContent = "Browsing...";
+      try {
+        const res = await apiFetch("/ai/browse", {
+          method: "POST",
+          body: JSON.stringify({ url, query })
+        });
+        ui.aiBrowseResponse.textContent = res.summary || "No summary.";
+      } catch (error) {
+        ui.aiBrowseResponse.textContent = String(error);
+      }
+    });
+
+    ui.aiUploadBtn.addEventListener("click", async () => {
+      const file = ui.aiUpload.files[0];
+      if (!file) return;
+      ui.aiUploadStatus.textContent = "Uploading...";
+      try {
+        const res = await apiFetchForm("/ai/ingest", file);
+        ui.aiUploadStatus.textContent = `Ingested ${res.doc_id} (${res.chunks} chunks)`;
+      } catch (error) {
+        ui.aiUploadStatus.textContent = String(error);
+      }
+    });
+
+    ui.aiQuizGenerate.addEventListener("click", async () => {
+      const topic = ui.aiQuizTopic.value.trim();
+      const difficulty = ui.aiQuizDifficulty.value;
+      const count = Number(ui.aiQuizCount.value) || 5;
+      if (!topic) return;
+      ui.aiQuizOutput.textContent = "Generating...";
+      try {
+        const res = await apiFetch("/ai/generate_quiz", {
+          method: "POST",
+          body: JSON.stringify({ topic, difficulty, count })
+        });
+        ui.aiQuizOutput.textContent = JSON.stringify(res.questions, null, 2);
+      } catch (error) {
+        ui.aiQuizOutput.textContent = String(error);
+      }
+    });
   }
 
   function bindNav() {
@@ -2223,6 +2319,32 @@
       }
     }
     const res = await fetch(getApiBase() + path, { ...options, headers });
+    if (res.status === 401) {
+      showLogin();
+      throw new Error("Unauthorized");
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || res.statusText);
+    }
+    return res.json();
+  }
+
+  async function apiFetchForm(path, file, auth = true) {
+    const headers = {};
+    if (auth) {
+      const token = localStorage.getItem(STORAGE_KEYS.token);
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+    }
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch(getApiBase() + path, {
+      method: "POST",
+      headers,
+      body: form
+    });
     if (res.status === 401) {
       showLogin();
       throw new Error("Unauthorized");
