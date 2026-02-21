@@ -244,6 +244,87 @@
             <h2>Question Manager</h2>
             <div id="manager-meta" class="muted"></div>
           </div>
+          <div class="manager-tools">
+            <div class="manager-tools-block">
+              <h3>Topic Actions</h3>
+              <div class="manager-tools-grid">
+                <label>
+                  New Topic ID
+                  <input id="topic-create-id" type="text" placeholder="network-vlan" />
+                </label>
+                <label>
+                  New Topic Name
+                  <input id="topic-create-name" type="text" placeholder="VLAN Basics" />
+                </label>
+                <label>
+                  Parent Topic
+                  <select id="topic-create-parent"></select>
+                </label>
+                <button id="topic-create" class="primary" type="button">Create Topic</button>
+              </div>
+              <div class="manager-tools-grid">
+                <label>
+                  Rename Topic
+                  <select id="topic-rename-id"></select>
+                </label>
+                <label>
+                  New Name
+                  <input id="topic-rename-name" type="text" />
+                </label>
+                <button id="topic-rename" class="ghost" type="button">Rename</button>
+              </div>
+              <div class="manager-tools-grid">
+                <label>
+                  Move Topic
+                  <select id="topic-move-id"></select>
+                </label>
+                <label>
+                  New Parent
+                  <select id="topic-move-parent"></select>
+                </label>
+                <button id="topic-move" class="ghost" type="button">Move</button>
+              </div>
+              <div class="manager-tools-grid">
+                <label>
+                  Delete Topic
+                  <select id="topic-delete-id"></select>
+                </label>
+                <label>
+                  Delete Mode
+                  <select id="topic-delete-mode">
+                    <option value="delete">Delete topic and everything inside</option>
+                    <option value="reassign">Delete topic, reassign children</option>
+                  </select>
+                </label>
+                <button id="topic-delete" class="ghost" type="button">Delete Topic</button>
+              </div>
+              <div id="topic-action-status" class="muted"></div>
+            </div>
+            <div class="manager-tools-block">
+              <h3>Bulk Actions</h3>
+              <div class="manager-tools-grid">
+                <div id="manager-bulk-count" class="muted">No questions selected.</div>
+                <button id="manager-select-all" class="ghost" type="button">Select All (Filtered)</button>
+                <button id="manager-clear-select" class="ghost" type="button">Clear Selection</button>
+              </div>
+              <div class="manager-tools-grid">
+                <label>
+                  Move Selected To
+                  <select id="manager-bulk-move-topic"></select>
+                </label>
+                <button id="manager-bulk-move" class="ghost" type="button">Move</button>
+                <button id="manager-bulk-delete" class="ghost" type="button">Delete</button>
+              </div>
+              <div class="manager-tools-grid">
+                <label>
+                  Change Type To
+                  <select id="manager-bulk-type"></select>
+                </label>
+                <button id="manager-bulk-type-apply" class="ghost" type="button">Change Type</button>
+              </div>
+              <div class="manager-tools-note muted">Bulk type change supports compatible conversions only.</div>
+            </div>
+          </div>
           <div id="manager-coverage" class="manager-coverage"></div>
           <div class="manager-controls">
             <label>
@@ -278,20 +359,23 @@
           <div class="table-wrap">
             <table class="manager-table">
               <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Topic</th>
-                  <th>Type</th>
-                  <th>Difficulty</th>
-                  <th>Prompt</th>
+            <tr>
+              <th>
+                <input id="manager-select-all-page" type="checkbox" />
+              </th>
+              <th>ID</th>
+              <th>Topic</th>
+              <th>Type</th>
+              <th>Difficulty</th>
+              <th>Prompt</th>
                   <th>Tags</th>
                   <th>Source</th>
                   <th>Actions</th>
                 </tr>
               </thead>
-              <tbody id="manager-tbody"></tbody>
-            </table>
-          </div>
+          <tbody id="manager-tbody"></tbody>
+        </table>
+      </div>
           <div class="manager-pagination">
             <button id="manager-load-more" class="ghost" type="button">Load more</button>
             <div id="manager-count" class="muted"></div>

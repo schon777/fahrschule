@@ -74,6 +74,48 @@ def get_db():
     return conn
 
 
+def get_table_columns(conn, table):
+    cur = conn.cursor()
+    cur.execute(f"PRAGMA table_info({table})")
+    return {row["name"] for row in cur.fetchall()}
+
+
+def ensure_column(conn, table, column, col_type, default=None):
+    columns = get_table_columns(conn, table)
+    if column in columns:
+        return
+    cur = conn.cursor()
+    cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+    if default is not None:
+        cur.execute(f"UPDATE {table} SET {column} = ? WHERE {column} IS NULL", (default,))
+    conn.commit()
+
+
+def ensure_topic_paths(conn):
+    cur = conn.cursor()
+    cur.execute("SELECT id, parent_id, path, depth FROM topics")
+    rows = [dict(row) for row in cur.fetchall()]
+    if not rows:
+        return
+    updates = []
+    for row in rows:
+        if row.get("path") and row.get("depth") is not None:
+            continue
+        updates.append((row["id"],))
+    if not updates:
+        return
+    cur.execute("SELECT id FROM topics")
+    existing = {r["id"] for r in cur.fetchall()}
+    for (topic_id,) in updates:
+        if topic_id not in existing:
+            continue
+        cur.execute(
+            "UPDATE topics SET parent_id = NULL, path = ?, depth = 0 WHERE id = ?",
+            (topic_id, topic_id),
+        )
+    conn.commit()
+
+
 def log_ai(user, action, detail):
     conn = get_db()
     cur = conn.cursor()
@@ -242,7 +284,10 @@ def init_db():
         CREATE TABLE IF NOT EXISTS topics (
             id TEXT PRIMARY KEY,
             name TEXT,
-            topic_area TEXT
+            topic_area TEXT,
+            parent_id TEXT,
+            path TEXT,
+            depth INTEGER
         )
         """
     )
@@ -320,6 +365,13 @@ def init_db():
         """
     )
     conn.commit()
+
+    # Backfill older schemas.
+    ensure_column(conn, "topics", "parent_id", "TEXT")
+    ensure_column(conn, "topics", "path", "TEXT")
+    ensure_column(conn, "topics", "depth", "INTEGER")
+    ensure_topic_paths(conn)
+
     conn.close()
 
 
@@ -713,8 +765,8 @@ def seed_data():
 
     for t in topics:
         cur.execute(
-            "INSERT INTO topics (id, name, topic_area) VALUES (?, ?, ?)",
-            (t["id"], t["name"], t.get("topic_area", "")),
+            "INSERT INTO topics (id, name, topic_area, parent_id, path, depth) VALUES (?, ?, ?, ?, ?, ?)",
+            (t["id"], t["name"], t.get("topic_area", ""), None, t["id"], 0),
         )
     for q in questions:
         cur.execute(
@@ -825,9 +877,12 @@ def create_question(data: dict, user=Depends(get_current_user)):
         (data["topicId"],),
     )
     if not cur.fetchone():
-        cur.execute(
-            "INSERT INTO topics (id, name, topic_area) VALUES (?, ?, ?)",
-            (data["topicId"], data.get("topicName", data["topicId"]), data.get("topic_area", "")),
+        ensure_topic_entry(
+            conn,
+            data["topicId"],
+            name=data.get("topicName", data["topicId"]),
+            topic_area=data.get("topic_area", ""),
+            parent_id=data.get("parent_topic_id"),
         )
     cur.execute(
         """
@@ -849,8 +904,128 @@ def create_question(data: dict, user=Depends(get_current_user)):
     return {"status": "created", "id": data["id"]}
 
 
+@app.put("/questions/{question_id}")
+def update_question(question_id: str, data: dict, user=Depends(get_current_user)):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT data FROM questions WHERE id = ?", (question_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Question not found")
+    topic_id = data.get("topicId") or data.get("topic_id")
+    if topic_id:
+        if not get_topic(conn, topic_id):
+            ensure_topic_entry(conn, topic_id, name=data.get("topicName", topic_id))
+    stored = json.loads(row["data"])
+    stored.update(data)
+    stored["id"] = question_id
+    if topic_id:
+        stored["topicId"] = topic_id
+    validate_question_data(stored)
+    cur.execute(
+        """
+        UPDATE questions
+        SET topic_id = ?, type = ?, data = ?, explanation = ?, source_ref = ?, tags = ?
+        WHERE id = ?
+        """,
+        (
+            stored.get("topicId"),
+            stored.get("type"),
+            json.dumps(stored),
+            stored.get("explanation", ""),
+            stored.get("source_ref", ""),
+            json.dumps(stored.get("tags", [])),
+            question_id,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return {"status": "updated", "id": question_id}
+
+
+@app.delete("/questions/{question_id}")
+def delete_question(question_id: str, user=Depends(get_current_user)):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM questions WHERE id = ?", (question_id,))
+    conn.commit()
+    conn.close()
+    return {"status": "deleted", "id": question_id}
+
+
 def slug_to_title(slug):
     return " ".join([part.capitalize() for part in slug.replace("_", "-").split("-")])
+
+
+def get_topic(conn, topic_id):
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM topics WHERE id = ?", (topic_id,))
+    row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def compute_topic_path(topic_id, parent):
+    if parent and parent.get("path"):
+        return f"{parent['path']}/{topic_id}"
+    return topic_id
+
+
+def ensure_topic_entry(conn, topic_id, name=None, topic_area="", parent_id=None):
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM topics WHERE id = ?", (topic_id,))
+    row = cur.fetchone()
+    if row:
+        return dict(row)
+    parent = get_topic(conn, parent_id) if parent_id else None
+    path = compute_topic_path(topic_id, parent)
+    depth = parent.get("depth", 0) + 1 if parent else 0
+    cur.execute(
+        "INSERT INTO topics (id, name, topic_area, parent_id, path, depth) VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            topic_id,
+            name or slug_to_title(topic_id),
+            topic_area or "",
+            parent_id,
+            path,
+            depth,
+        ),
+    )
+    conn.commit()
+    return get_topic(conn, topic_id)
+
+
+def is_descendant_path(path, potential_parent_path):
+    return path == potential_parent_path or path.startswith(f"{potential_parent_path}/")
+
+
+def move_topic(conn, topic_id, new_parent_id):
+    topic = get_topic(conn, topic_id)
+    if not topic:
+        raise HTTPException(status_code=404, detail="Topic not found")
+    if new_parent_id == topic_id:
+        raise HTTPException(status_code=400, detail="Cannot parent topic to itself")
+    parent = get_topic(conn, new_parent_id) if new_parent_id else None
+    if parent and is_descendant_path(parent.get("path", ""), topic.get("path", "")):
+        raise HTTPException(status_code=400, detail="Cannot move topic into its descendant")
+    old_path = topic.get("path") or topic_id
+    new_path = compute_topic_path(topic_id, parent)
+    depth_delta = (parent.get("depth", 0) + 1 if parent else 0) - (topic.get("depth") or 0)
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE topics SET parent_id = ?, path = ?, depth = ? WHERE id = ?",
+        (new_parent_id, new_path, (topic.get("depth") or 0) + depth_delta, topic_id),
+    )
+    cur.execute("SELECT id, path, depth FROM topics WHERE path LIKE ?", (f"{old_path}/%",))
+    descendants = [dict(row) for row in cur.fetchall()]
+    for desc in descendants:
+        new_desc_path = desc["path"].replace(f"{old_path}/", f"{new_path}/", 1)
+        new_desc_depth = (desc.get("depth") or 0) + depth_delta
+        cur.execute(
+            "UPDATE topics SET path = ?, depth = ? WHERE id = ?",
+            (new_desc_path, new_desc_depth, desc["id"]),
+        )
+    conn.commit()
 
 
 def normalize_question(input_q, topic_map, errors):
@@ -869,6 +1044,14 @@ def normalize_question(input_q, topic_map, errors):
             "name": slug_to_title(topic_slug),
             "topic_area": "",
         }
+    stem_id = input_q.get("stem_id") or input_q.get("stemId")
+    stem_text = (
+        input_q.get("stem_text")
+        or input_q.get("stemText")
+        or input_q.get("stem")
+        or input_q.get("prompt")
+        or input_q.get("text")
+    )
     prompt = input_q.get("prompt") or input_q.get("statement") or input_q.get("text")
     if not prompt:
         errors.append(f"Question {input_q['id']} missing prompt.")
@@ -882,6 +1065,8 @@ def normalize_question(input_q, topic_map, errors):
         "explanation": input_q.get("explanation", ""),
         "source_ref": input_q.get("source_ref", "internal:import"),
         "tags": input_q.get("tags", []),
+        "stem_id": stem_id,
+        "stem_text": stem_text,
     }
 
     if q_type == "single":
@@ -937,23 +1122,167 @@ def normalize_question(input_q, topic_map, errors):
     return None
 
 
+def validate_question_data(question):
+    q_type = question.get("type")
+    if not q_type:
+        raise HTTPException(status_code=400, detail="Missing type")
+    if q_type == "single":
+        options = question.get("options")
+        correct = question.get("correctIndex")
+        if not isinstance(options, list) or len(options) < 2:
+            raise HTTPException(status_code=400, detail="Single requires options")
+        if correct is None or not isinstance(correct, int) or correct < 0 or correct >= len(options):
+            raise HTTPException(status_code=400, detail="Single requires valid correctIndex")
+        return
+    if q_type == "multi":
+        options = question.get("options")
+        correct = question.get("correctIndexes")
+        if not isinstance(options, list) or len(options) < 2:
+            raise HTTPException(status_code=400, detail="Multi requires options")
+        if not isinstance(correct, list) or len(correct) == 0:
+            raise HTTPException(status_code=400, detail="Multi requires correctIndexes")
+        if any((not isinstance(idx, int) or idx < 0 or idx >= len(options)) for idx in correct):
+            raise HTTPException(status_code=400, detail="Multi requires valid correctIndexes")
+        return
+    if q_type == "truefalse":
+        if not isinstance(question.get("correctBoolean"), bool):
+            raise HTTPException(status_code=400, detail="Truefalse requires correctBoolean")
+        return
+    if q_type == "fillblank":
+        answers = question.get("answers") or question.get("expectedAnswers")
+        if not isinstance(answers, list) or len(answers) == 0:
+            raise HTTPException(status_code=400, detail="Fillblank requires answers")
+        return
+    if q_type == "matching":
+        pairs = question.get("pairs")
+        if not isinstance(pairs, list) or len(pairs) == 0:
+            raise HTTPException(status_code=400, detail="Matching requires pairs")
+        return
+    if q_type == "ordering":
+        items = question.get("items")
+        correct = question.get("correct_order")
+        if not isinstance(items, list) or len(items) == 0:
+            raise HTTPException(status_code=400, detail="Ordering requires items")
+        if not isinstance(correct, list) or len(correct) != len(items):
+            raise HTTPException(status_code=400, detail="Ordering requires correct_order")
+        return
+    if q_type == "guess":
+        answers = question.get("expectedAnswers")
+        if not isinstance(answers, list) or len(answers) == 0:
+            raise HTTPException(status_code=400, detail="Guess requires expectedAnswers")
+        return
+    if q_type == "explain":
+        expected = question.get("expectedAnswer")
+        if not isinstance(expected, str):
+            raise HTTPException(status_code=400, detail="Explain requires expectedAnswer")
+        return
+    if q_type == "exam":
+        expected = question.get("expectedAnswer")
+        if not isinstance(expected, str):
+            raise HTTPException(status_code=400, detail="Exam requires expectedAnswer")
+        return
+
+
 @app.post("/questions/import")
 def import_questions(data: dict, replace_duplicates: bool = False, user=Depends(get_current_user)):
-    if data.get("schema") != "ap2-questionpack-v1":
+    schema = data.get("schema")
+    if schema not in ("ap2-questionpack-v1", "ap2-questionpack-v2"):
         raise HTTPException(status_code=400, detail="Invalid schema")
     topics_input = data.get("topics", [])
     questions_input = data.get("questions", [])
+    stems_input = data.get("stems", [])
     errors = []
     topic_map = {}
     for t in topics_input:
-        if "slug" in t:
-            topic_map[t["slug"]] = {
-                "id": t["slug"],
-                "name": t.get("title", slug_to_title(t["slug"])),
+        slug = t.get("slug") or t.get("id") or t.get("topic_id")
+        if slug:
+            parent_id = t.get("parent_topic_id") or t.get("parent_id")
+            topic_map[slug] = {
+                "id": slug,
+                "name": t.get("title") or t.get("name") or slug_to_title(slug),
                 "topic_area": t.get("topic_area", ""),
+                "parent_id": parent_id,
+                "path": t.get("path"),
+                "depth": t.get("depth"),
             }
         else:
-            errors.append("Topic missing slug.")
+            errors.append("Topic missing slug/id.")
+
+    # Build paths/depths for topic tree.
+    visiting = set()
+    visited = set()
+
+    def compute_tree(slug):
+        if slug in visited:
+            return
+        if slug in visiting:
+            errors.append(f"Topic cycle detected at {slug}.")
+            return
+        visiting.add(slug)
+        node = topic_map.get(slug, {})
+        parent_id = node.get("parent_id")
+        if parent_id and parent_id not in topic_map:
+            topic_map[parent_id] = {
+                "id": parent_id,
+                "name": slug_to_title(parent_id),
+                "topic_area": "",
+                "parent_id": None,
+                "path": parent_id,
+                "depth": 0,
+            }
+        if parent_id:
+            compute_tree(parent_id)
+            parent = topic_map[parent_id]
+            if not node.get("path"):
+                node["path"] = f"{parent['path']}/{slug}"
+            if node.get("depth") is None:
+                node["depth"] = (parent.get("depth") or 0) + 1
+        else:
+            node["path"] = node.get("path") or slug
+            node["depth"] = node.get("depth") if node.get("depth") is not None else 0
+        topic_map[slug] = node
+        visiting.remove(slug)
+        visited.add(slug)
+
+    for slug in list(topic_map.keys()):
+        compute_tree(slug)
+
+    # Expand stems into questions.
+    for stem in stems_input:
+        stem_id = stem.get("stem_id") or stem.get("id")
+        stem_text = stem.get("stem_text") or stem.get("text") or stem.get("prompt")
+        stem_topic = stem.get("topic_id") or stem.get("topic_slug") or stem.get("topicId")
+        if not stem_id or not stem_text:
+            errors.append("Stem missing stem_id or stem_text.")
+            continue
+        variants = stem.get("variants", [])
+        if not isinstance(variants, list) or len(variants) == 0:
+            errors.append(f"Stem {stem_id} missing variants.")
+            continue
+        for variant in variants:
+            if not isinstance(variant, dict):
+                errors.append(f"Stem {stem_id} variant is not an object.")
+                continue
+            variant_id = variant.get("id")
+            if not variant_id:
+                errors.append(f"Stem {stem_id} variant missing id.")
+                continue
+            variant_topic = (
+                variant.get("topic_slug")
+                or variant.get("topic_id")
+                or variant.get("topicId")
+                or stem_topic
+            )
+            questions_input.append(
+                {
+                    **variant,
+                    "id": variant_id,
+                    "stem_id": stem_id,
+                    "stem_text": stem_text,
+                    "topic_slug": variant_topic,
+                    "prompt": variant.get("prompt") or stem_text,
+                }
+            )
 
     normalized = []
     summary = {"total": 0, "valid": 0, "invalid": 0, "types": {}, "topics": {}}
@@ -978,8 +1307,15 @@ def import_questions(data: dict, replace_duplicates: bool = False, user=Depends(
         cur.execute("SELECT 1 FROM topics WHERE id = ?", (t["id"],))
         if not cur.fetchone():
             cur.execute(
-                "INSERT INTO topics (id, name, topic_area) VALUES (?, ?, ?)",
-                (t["id"], t["name"], t.get("topic_area", "")),
+                "INSERT INTO topics (id, name, topic_area, parent_id, path, depth) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    t["id"],
+                    t["name"],
+                    t.get("topic_area", ""),
+                    t.get("parent_id"),
+                    t.get("path") or t["id"],
+                    t.get("depth", 0),
+                ),
             )
 
     for q in normalized:
@@ -1039,19 +1375,39 @@ def export_questions(user=Depends(get_current_user)):
     questions = [json.loads(row["data"]) for row in cur.fetchall()]
     conn.close()
     pack = {
-        "schema": "ap2-questionpack-v1",
+        "schema": "ap2-questionpack-v2",
         "meta": {
             "title": "AP2 Export",
             "generated_by": "AP2 Trainer",
             "created_at": datetime.now().strftime("%Y-%m-%d"),
         },
         "topics": [
-            {"slug": t["id"], "title": t["name"], "topic_area": t.get("topic_area", "")}
+            {
+                "slug": t["id"],
+                "title": t["name"],
+                "topic_area": t.get("topic_area", ""),
+                "parent_topic_id": t.get("parent_id"),
+                "path": t.get("path") or t["id"],
+                "depth": t.get("depth") if t.get("depth") is not None else 0,
+            }
             for t in topics
         ],
+        "stems": [],
         "questions": [],
     }
+    stems = {}
     for q in questions:
+        stem_id = q.get("stem_id")
+        if stem_id:
+            if stem_id not in stems:
+                stems[stem_id] = {
+                    "stem_id": stem_id,
+                    "stem_text": q.get("stem_text") or q.get("prompt") or "",
+                    "topic_id": q.get("topicId"),
+                    "variants": [],
+                }
+            stems[stem_id]["variants"].append(q)
+            continue
         base = {
             "id": q["id"],
             "topic_slug": q["topicId"],
@@ -1081,10 +1437,220 @@ def export_questions(user=Depends(get_current_user)):
         elif q["type"] == "explain":
             pack["questions"].append({**base, "type": "explainterm", "keywords": q.get("expectedAnswer", "").split(",")})
         elif q["type"] == "exam":
-            pack["questions"].append({**base, "grading": "self"})
+            pack["questions"].append({**base, "answer_key": q.get("expectedAnswer", ""), "grading": "self"})
         else:
             pack["questions"].append(base)
+    for stem in stems.values():
+        variants = []
+        for q in stem["variants"]:
+            base = {
+                "id": q["id"],
+                "type": q["type"],
+                "prompt": q.get("prompt"),
+                "explanation": q.get("explanation", ""),
+                "source_ref": q.get("source_ref", ""),
+                "tags": q.get("tags", []),
+            }
+            if q["type"] == "single":
+                variants.append({**base, "options": q["options"], "correct": [q["correctIndex"]]})
+            elif q["type"] == "multi":
+                variants.append({**base, "options": q["options"], "correct": q["correctIndexes"]})
+            elif q["type"] == "truefalse":
+                variants.append({**base, "correct": q["correctBoolean"]})
+            elif q["type"] == "fillblank":
+                variants.append({**base, "text": q.get("prompt"), "answers": q.get("answers", q.get("expectedAnswers", []))})
+            elif q["type"] == "matching":
+                left = [p["left"] for p in q["pairs"]]
+                right = [p["right"] for p in q["pairs"]]
+                pairs = [[i, i] for i in range(len(q["pairs"]))]
+                variants.append({**base, "left": left, "right": right, "pairs": pairs})
+            elif q["type"] == "ordering":
+                variants.append({**base, "items": q["items"], "correct_order": q["correct_order"]})
+            elif q["type"] == "guess":
+                variants.append({**base, "type": "guessword", "answers": q.get("expectedAnswers", [])})
+            elif q["type"] == "explain":
+                variants.append({**base, "type": "explainterm", "keywords": q.get("expectedAnswer", "").split(",")})
+            elif q["type"] == "exam":
+                variants.append({**base, "answer_key": q.get("expectedAnswer", ""), "grading": "self"})
+            else:
+                variants.append(base)
+        pack["stems"].append({**stem, "variants": variants})
     return pack
+
+
+@app.get("/topics")
+def get_topics(user=Depends(get_current_user)):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM topics")
+    topics = [dict(row) for row in cur.fetchall()]
+    conn.close()
+    return {"topics": topics}
+
+
+@app.post("/topics")
+def create_topic(data: dict, user=Depends(get_current_user)):
+    topic_id = data.get("id") or data.get("slug")
+    name = data.get("name") or data.get("title")
+    parent_id = data.get("parent_id") or data.get("parent_topic_id")
+    topic_area = data.get("topic_area", "")
+    if not topic_id:
+        raise HTTPException(status_code=400, detail="Missing topic id")
+    conn = get_db()
+    if get_topic(conn, topic_id):
+        conn.close()
+        raise HTTPException(status_code=409, detail="Topic already exists")
+    parent = get_topic(conn, parent_id) if parent_id else None
+    if parent_id and not parent:
+        conn.close()
+        raise HTTPException(status_code=400, detail="Parent topic not found")
+    path = compute_topic_path(topic_id, parent)
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM topics WHERE path = ?", (path,))
+    if cur.fetchone():
+        conn.close()
+        raise HTTPException(status_code=409, detail="Topic path already exists")
+    depth = parent.get("depth", 0) + 1 if parent else 0
+    cur.execute(
+        "INSERT INTO topics (id, name, topic_area, parent_id, path, depth) VALUES (?, ?, ?, ?, ?, ?)",
+        (topic_id, name or slug_to_title(topic_id), topic_area, parent_id, path, depth),
+    )
+    conn.commit()
+    conn.close()
+    return {"status": "created", "id": topic_id}
+
+
+@app.put("/topics/{topic_id}")
+def update_topic(topic_id: str, data: dict, user=Depends(get_current_user)):
+    conn = get_db()
+    topic = get_topic(conn, topic_id)
+    if not topic:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Topic not found")
+    name = data.get("name") or data.get("title")
+    new_parent_id = data.get("parent_id") or data.get("parent_topic_id")
+    if new_parent_id is not None and new_parent_id != topic.get("parent_id"):
+        move_topic(conn, topic_id, new_parent_id)
+    if name:
+        cur = conn.cursor()
+        cur.execute("UPDATE topics SET name = ? WHERE id = ?", (name, topic_id))
+        conn.commit()
+    conn.close()
+    return {"status": "updated", "id": topic_id}
+
+
+@app.delete("/topics/{topic_id}")
+def delete_topic(topic_id: str, mode: str = "delete", user=Depends(get_current_user)):
+    conn = get_db()
+    topic = get_topic(conn, topic_id)
+    if not topic:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Topic not found")
+    cur = conn.cursor()
+    if mode == "reassign":
+        parent_id = topic.get("parent_id")
+        if not parent_id:
+            conn.close()
+            raise HTTPException(status_code=400, detail="Cannot reassign root topic")
+        cur.execute("SELECT id FROM topics WHERE parent_id = ?", (topic_id,))
+        child_ids = [row["id"] for row in cur.fetchall()]
+        for child_id in child_ids:
+            move_topic(conn, child_id, parent_id)
+        cur.execute("UPDATE questions SET topic_id = ? WHERE topic_id = ?", (parent_id, topic_id))
+        cur.execute("DELETE FROM topics WHERE id = ?", (topic_id,))
+        conn.commit()
+        conn.close()
+        return {"status": "deleted", "mode": "reassign", "id": topic_id}
+    if mode != "delete":
+        conn.close()
+        raise HTTPException(status_code=400, detail="Invalid delete mode")
+    path = topic.get("path") or topic_id
+    cur.execute("SELECT id FROM topics WHERE id = ? OR path LIKE ?", (topic_id, f"{path}/%"))
+    delete_ids = [row["id"] for row in cur.fetchall()]
+    if delete_ids:
+        placeholders = ",".join(["?"] * len(delete_ids))
+        cur.execute(f"DELETE FROM questions WHERE topic_id IN ({placeholders})", delete_ids)
+        cur.execute(f"DELETE FROM topics WHERE id IN ({placeholders})", delete_ids)
+    conn.commit()
+    conn.close()
+    return {"status": "deleted", "mode": "delete", "id": topic_id, "topics_deleted": len(delete_ids)}
+
+
+def convert_question_type(question, target_type):
+    current = question.get("type")
+    if current == target_type:
+        return question
+    if current == "single" and target_type == "multi":
+        question["type"] = "multi"
+        question["correctIndexes"] = [question.get("correctIndex", 0)]
+        question.pop("correctIndex", None)
+        return question
+    if current == "multi" and target_type == "single":
+        correct = question.get("correctIndexes", [])
+        question["type"] = "single"
+        question["correctIndex"] = correct[0] if correct else 0
+        question.pop("correctIndexes", None)
+        return question
+    raise HTTPException(status_code=400, detail="Unsupported type conversion")
+
+
+@app.post("/questions/bulk")
+def bulk_questions(data: dict, user=Depends(get_current_user)):
+    action = data.get("action")
+    ids = data.get("ids") or []
+    if not isinstance(ids, list) or len(ids) == 0:
+        raise HTTPException(status_code=400, detail="Missing ids")
+    conn = get_db()
+    cur = conn.cursor()
+    if action == "delete":
+        placeholders = ",".join(["?"] * len(ids))
+        cur.execute(f"DELETE FROM questions WHERE id IN ({placeholders})", ids)
+        conn.commit()
+        conn.close()
+        return {"status": "deleted", "count": cur.rowcount}
+    if action == "move":
+        topic_id = data.get("topic_id")
+        if not topic_id:
+            conn.close()
+            raise HTTPException(status_code=400, detail="Missing topic_id")
+        if not get_topic(conn, topic_id):
+            conn.close()
+            raise HTTPException(status_code=400, detail="Topic not found")
+        placeholders = ",".join(["?"] * len(ids))
+        cur.execute(f"SELECT id, data FROM questions WHERE id IN ({placeholders})", ids)
+        rows = [dict(row) for row in cur.fetchall()]
+        for row in rows:
+            q = json.loads(row["data"])
+            q["topicId"] = topic_id
+            cur.execute(
+                "UPDATE questions SET topic_id = ?, data = ? WHERE id = ?",
+                (topic_id, json.dumps(q), row["id"]),
+            )
+        conn.commit()
+        conn.close()
+        return {"status": "moved", "count": len(rows), "topic_id": topic_id}
+    if action == "change_type":
+        target_type = data.get("target_type")
+        if not target_type:
+            conn.close()
+            raise HTTPException(status_code=400, detail="Missing target_type")
+        placeholders = ",".join(["?"] * len(ids))
+        cur.execute(f"SELECT id, data FROM questions WHERE id IN ({placeholders})", ids)
+        rows = [dict(row) for row in cur.fetchall()]
+        updated = 0
+        for row in rows:
+            q = json.loads(row["data"])
+            q = convert_question_type(q, target_type)
+            cur.execute(
+                "UPDATE questions SET type = ?, data = ? WHERE id = ?",
+                (q["type"], json.dumps(q), row["id"]),
+            )
+            updated += 1
+        conn.commit()
+        conn.close()
+        return {"status": "updated", "count": updated, "target_type": target_type}
+    conn.close()
+    raise HTTPException(status_code=400, detail="Unknown action")
 
 
 @app.get("/attempts")
@@ -1301,8 +1867,8 @@ def ai_generate_quiz(data: dict, user=Depends(get_current_user)):
         cur.execute("SELECT 1 FROM topics WHERE id = ?", (topic,))
         if not cur.fetchone():
             cur.execute(
-                "INSERT INTO topics (id, name, topic_area) VALUES (?, ?, ?)",
-                (topic, topic.replace("-", " ").title(), ""),
+                "INSERT INTO topics (id, name, topic_area, parent_id, path, depth) VALUES (?, ?, ?, ?, ?, ?)",
+                (topic, topic.replace("-", " ").title(), "", None, topic, 0),
             )
         for q in questions:
             qid = q.get("id") or f"ai_{uuid.uuid4().hex[:8]}"
@@ -1387,4 +1953,3 @@ def ai_browse(data: dict, user=Depends(get_current_user)):
     summary = ollama_generate(prompt, AI_MODELS["chat"], system=system, temperature=0.2)
     log_ai(user, "browse", {"url": url})
     return {"summary": summary, "source_url": url}
-

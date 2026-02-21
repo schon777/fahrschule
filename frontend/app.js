@@ -108,9 +108,32 @@
     managerShowSeeded: document.getElementById("manager-show-seeded"),
     managerShowCustom: document.getElementById("manager-show-custom"),
     managerAllowSeededEdit: document.getElementById("manager-allow-seeded-edit"),
+    managerSelectAllPage: document.getElementById("manager-select-all-page"),
     managerTbody: document.getElementById("manager-tbody"),
     managerLoadMore: document.getElementById("manager-load-more"),
     managerCount: document.getElementById("manager-count"),
+    managerBulkCount: document.getElementById("manager-bulk-count"),
+    managerSelectAll: document.getElementById("manager-select-all"),
+    managerClearSelect: document.getElementById("manager-clear-select"),
+    managerBulkMoveTopic: document.getElementById("manager-bulk-move-topic"),
+    managerBulkMove: document.getElementById("manager-bulk-move"),
+    managerBulkDelete: document.getElementById("manager-bulk-delete"),
+    managerBulkType: document.getElementById("manager-bulk-type"),
+    managerBulkTypeApply: document.getElementById("manager-bulk-type-apply"),
+    topicCreateId: document.getElementById("topic-create-id"),
+    topicCreateName: document.getElementById("topic-create-name"),
+    topicCreateParent: document.getElementById("topic-create-parent"),
+    topicCreate: document.getElementById("topic-create"),
+    topicRenameId: document.getElementById("topic-rename-id"),
+    topicRenameName: document.getElementById("topic-rename-name"),
+    topicRename: document.getElementById("topic-rename"),
+    topicMoveId: document.getElementById("topic-move-id"),
+    topicMoveParent: document.getElementById("topic-move-parent"),
+    topicMove: document.getElementById("topic-move"),
+    topicDeleteId: document.getElementById("topic-delete-id"),
+    topicDeleteMode: document.getElementById("topic-delete-mode"),
+    topicDelete: document.getElementById("topic-delete"),
+    topicActionStatus: document.getElementById("topic-action-status"),
     managerEdit: document.getElementById("manager-edit"),
     managerEditForm: document.getElementById("manager-edit-form"),
     managerEditClose: document.getElementById("manager-edit-close"),
@@ -157,6 +180,8 @@
   let dataStore = { topics: [], questions: [] };
   let questionOrder = new Map();
   let managerEditId = null;
+  let managerSelectedIds = new Set();
+  let managerVisibleIds = [];
   let attempts = [];
   let appointments = [];
   let currentQuestionStartAt = null;
@@ -313,7 +338,7 @@
             kind: "spec",
             bytes: content.length
           });
-          downloadTextFile("ap2-questionpack-v1-spec.txt", content, "spec");
+          downloadTextFile("ap2-questionpack-v2-spec.txt", content, "spec");
         } catch (error) {
           showError("Failed to generate AI format guide.", String(error));
           logger.error("builder", "ai guide generate failed", { error: String(error) });
@@ -328,7 +353,7 @@
             kind: "prompt",
             bytes: content.length
           });
-          downloadTextFile("ap2-questionpack-v1-prompt-template.txt", content, "prompt");
+          downloadTextFile("ap2-questionpack-v2-prompt-template.txt", content, "prompt");
         } catch (error) {
           showError("Failed to generate AI prompt template.", String(error));
           logger.error("builder", "ai prompt generate failed", { error: String(error) });
@@ -385,6 +410,20 @@
       logger.debug("manager", "load more", { page: state.managerPage });
       renderManager();
     });
+    if (ui.managerSelectAllPage) {
+      ui.managerSelectAllPage.addEventListener("change", (event) => {
+        const checked = event.target.checked;
+        managerVisibleIds.forEach((id) => {
+          if (checked) {
+            managerSelectedIds.add(id);
+          } else {
+            managerSelectedIds.delete(id);
+          }
+        });
+        renderManager();
+        updateManagerSelectionUI();
+      });
+    }
     ui.managerTbody.addEventListener("click", (event) => {
       const target = event.target;
       if (!(target instanceof HTMLElement)) return;
@@ -397,6 +436,19 @@
         confirmDeleteQuestion(id);
       }
     });
+    ui.managerTbody.addEventListener("change", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) return;
+      if (target.dataset.action !== "select") return;
+      const id = target.dataset.id;
+      if (!id) return;
+      if (target.checked) {
+        managerSelectedIds.add(id);
+      } else {
+        managerSelectedIds.delete(id);
+      }
+      updateManagerSelectionUI();
+    });
     ui.managerEditClose.addEventListener("click", () => {
       closeManagerEdit();
     });
@@ -407,6 +459,56 @@
       event.preventDefault();
       saveManagerEdit();
     });
+    if (ui.managerSelectAll) {
+      ui.managerSelectAll.addEventListener("click", () => {
+        const all = getManagerFilteredQuestions();
+        all.forEach((q) => managerSelectedIds.add(q.id));
+        renderManager();
+        updateManagerSelectionUI();
+      });
+    }
+    if (ui.managerClearSelect) {
+      ui.managerClearSelect.addEventListener("click", () => {
+        managerSelectedIds.clear();
+        renderManager();
+        updateManagerSelectionUI();
+      });
+    }
+    if (ui.managerBulkMove) {
+      ui.managerBulkMove.addEventListener("click", () => {
+        runWithLatency(() => bulkMoveQuestions());
+      });
+    }
+    if (ui.managerBulkDelete) {
+      ui.managerBulkDelete.addEventListener("click", () => {
+        runWithLatency(() => bulkDeleteQuestions());
+      });
+    }
+    if (ui.managerBulkTypeApply) {
+      ui.managerBulkTypeApply.addEventListener("click", () => {
+        runWithLatency(() => bulkChangeQuestionType());
+      });
+    }
+    if (ui.topicCreate) {
+      ui.topicCreate.addEventListener("click", () => {
+        runWithLatency(() => createTopic());
+      });
+    }
+    if (ui.topicRename) {
+      ui.topicRename.addEventListener("click", () => {
+        runWithLatency(() => renameTopic());
+      });
+    }
+    if (ui.topicMove) {
+      ui.topicMove.addEventListener("click", () => {
+        runWithLatency(() => moveTopic());
+      });
+    }
+    if (ui.topicDelete) {
+      ui.topicDelete.addEventListener("click", () => {
+        runWithLatency(() => deleteTopic());
+      });
+    }
   }
 
   function bindLogin() {
@@ -510,7 +612,7 @@
 
   function renderTopicsTable(total, attemptedIds, correctIds) {
     ui.topicsBody.innerHTML = "";
-    dataStore.topics.forEach((topic) => {
+    getSortedTopics().forEach((topic) => {
       const questions = dataStore.questions.filter(
         (q) => q.topicId === topic.id
       );
@@ -528,7 +630,7 @@
 
       const row = document.createElement("tr");
       row.innerHTML = `
-        <td>${escapeHtml(topic.name)}</td>
+        <td>${escapeHtml(getTopicDisplayPath(topic.id))}</td>
         <td>${totalTopic}</td>
         <td>${donePct}</td>
         <td>${correctPct}</td>
@@ -1403,14 +1505,12 @@
   function renderQuizControls() {
     ui.quizTopic.innerHTML = "";
     ui.quizMode.innerHTML = "";
-    const topicOptions = [
-      { id: "all", name: "All Topics (Mixed)" },
-      ...dataStore.topics
-    ];
+    const topicOptions = [{ id: "all", name: "All Topics (Mixed)" }, ...getSortedTopics()];
     topicOptions.forEach((topic) => {
       const opt = document.createElement("option");
       opt.value = topic.id;
-      opt.textContent = topic.name;
+      opt.textContent =
+        topic.id === "all" ? topic.name : formatTopicLabel(topic);
       ui.quizTopic.appendChild(opt);
     });
     ui.quizTopic.value = state.quizTopic;
@@ -1441,10 +1541,10 @@
       return;
     }
     ui.builderTopic.innerHTML = "";
-    dataStore.topics.forEach((topic) => {
+    getSortedTopics().forEach((topic) => {
       const opt = document.createElement("option");
       opt.value = topic.id;
-      opt.textContent = topic.name;
+      opt.textContent = formatTopicLabel(topic);
       ui.builderTopic.appendChild(opt);
     });
     ui.builderType.innerHTML = "";
@@ -1855,6 +1955,40 @@
       .map((q) => (overrides[q.id] ? { ...q, ...overrides[q.id] } : q));
   }
 
+  async function migrateLocalQuestionMutations() {
+    const overrides = loadLocalQuestionOverrides();
+    const deletes = loadLocalQuestionDeletes();
+    const overrideIds = Object.keys(overrides);
+    const deleteIds = Array.from(deletes);
+    if (overrideIds.length === 0 && deleteIds.length === 0) {
+      return;
+    }
+    try {
+      for (const id of overrideIds) {
+        const updated = overrides[id];
+        if (!updated || updated.id !== id) {
+          continue;
+        }
+        await apiFetch(`/questions/${encodeURIComponent(id)}`, {
+          method: "PUT",
+          body: JSON.stringify(updated)
+        });
+      }
+      for (const id of deleteIds) {
+        await apiFetch(`/questions/${encodeURIComponent(id)}`, { method: "DELETE" });
+      }
+      localStorage.removeItem(STORAGE_KEYS.questionOverrides);
+      localStorage.removeItem(STORAGE_KEYS.questionDeletes);
+      logger.info("manager", "local mutations migrated", {
+        overrides: overrideIds.length,
+        deletes: deleteIds.length
+      });
+      refreshDataStore();
+    } catch (error) {
+      logger.error("manager", "local mutation migrate failed", { error: String(error) });
+    }
+  }
+
   function isSeededQuestion(question) {
     const source = String(question.source_ref || "").toLowerCase();
     const tags = Array.isArray(question.tags)
@@ -1864,9 +1998,44 @@
     return seededHints.some((hint) => source.includes(hint)) || tags.includes("seeded");
   }
 
+  function getTopicPath(topic) {
+    return topic && topic.path ? topic.path : topic ? topic.id : "";
+  }
+
+  function getTopicDepth(topic) {
+    if (!topic) return 0;
+    if (typeof topic.depth === "number") return topic.depth;
+    const path = getTopicPath(topic);
+    return path ? path.split("/").length - 1 : 0;
+  }
+
+  function getSortedTopics() {
+    return [...dataStore.topics].sort((a, b) =>
+      getTopicPath(a).localeCompare(getTopicPath(b))
+    );
+  }
+
+  function getTopicDisplayPath(topicId) {
+    const map = new Map(dataStore.topics.map((t) => [t.id, t]));
+    const parts = [];
+    let current = map.get(topicId);
+    let guard = 0;
+    while (current && guard < dataStore.topics.length + 1) {
+      parts.unshift(current.name || current.id);
+      current = map.get(current.parent_id);
+      guard += 1;
+    }
+    return parts.length ? parts.join(" / ") : topicId || "unknown";
+  }
+
   function getTopicName(topicId) {
-    const topic = dataStore.topics.find((t) => t.id === topicId);
-    return topic ? topic.name : topicId || "unknown";
+    return getTopicDisplayPath(topicId);
+  }
+
+  function formatTopicLabel(topic) {
+    const depth = getTopicDepth(topic);
+    const prefix = depth > 0 ? `${"--".repeat(depth)} ` : "";
+    return `${prefix}${topic.name || topic.id}`;
   }
 
   function getDifficultyValue(question) {
@@ -1902,10 +2071,12 @@
   function renderManagerControls() {
     if (!ui.managerTopic) return;
     ui.managerSearch.value = state.managerSearch;
+    const sortedTopics = getSortedTopics();
     const topicOptions = [
       `<option value="all">All topics</option>`,
-      ...dataStore.topics.map(
-        (t) => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`
+      ...sortedTopics.map(
+        (t) =>
+          `<option value="${escapeHtml(t.id)}">${escapeHtml(formatTopicLabel(t))}</option>`
       )
     ];
     ui.managerTopic.innerHTML = topicOptions.join("");
@@ -1928,6 +2099,58 @@
     ui.managerShowSeeded.checked = state.managerShowSeeded;
     ui.managerShowCustom.checked = state.managerShowCustom;
     ui.managerAllowSeededEdit.checked = state.managerAllowSeededEdit;
+
+    const topicSelectOptions = [
+      `<option value="">No parent (root)</option>`,
+      ...sortedTopics.map(
+        (t) =>
+          `<option value="${escapeHtml(t.id)}">${escapeHtml(formatTopicLabel(t))}</option>`
+      )
+    ];
+    if (ui.topicCreateParent) {
+      ui.topicCreateParent.innerHTML = topicSelectOptions.join("");
+    }
+    if (ui.topicRenameId) {
+      ui.topicRenameId.innerHTML = sortedTopics
+        .map(
+          (t) =>
+            `<option value="${escapeHtml(t.id)}">${escapeHtml(formatTopicLabel(t))}</option>`
+        )
+        .join("");
+    }
+    if (ui.topicMoveId) {
+      ui.topicMoveId.innerHTML = sortedTopics
+        .map(
+          (t) =>
+            `<option value="${escapeHtml(t.id)}">${escapeHtml(formatTopicLabel(t))}</option>`
+        )
+        .join("");
+    }
+    if (ui.topicMoveParent) {
+      ui.topicMoveParent.innerHTML = topicSelectOptions.join("");
+    }
+    if (ui.topicDeleteId) {
+      ui.topicDeleteId.innerHTML = sortedTopics
+        .map(
+          (t) =>
+            `<option value="${escapeHtml(t.id)}">${escapeHtml(formatTopicLabel(t))}</option>`
+        )
+        .join("");
+    }
+    if (ui.managerBulkMoveTopic) {
+      ui.managerBulkMoveTopic.innerHTML = sortedTopics
+        .map(
+          (t) =>
+            `<option value="${escapeHtml(t.id)}">${escapeHtml(formatTopicLabel(t))}</option>`
+        )
+        .join("");
+    }
+    if (ui.managerBulkType) {
+      ui.managerBulkType.innerHTML = allTypes
+        .map((t) => `<option value="${t}">${t}</option>`)
+        .join("");
+    }
+    updateManagerSelectionUI();
   }
 
   function getManagerTypeList() {
@@ -1986,10 +2209,11 @@
     const all = getManagerFilteredQuestions();
     const pageSize = 25;
     const visible = all.slice(0, pageSize * state.managerPage);
+    managerVisibleIds = visible.map((q) => q.id);
     ui.managerTbody.innerHTML = "";
     if (visible.length === 0) {
       const row = document.createElement("tr");
-      row.innerHTML = `<td colspan="8" class="muted">No questions match your filters.</td>`;
+      row.innerHTML = `<td colspan="9" class="muted">No questions match your filters.</td>`;
       ui.managerTbody.appendChild(row);
     }
     visible.forEach((q) => {
@@ -2000,7 +2224,9 @@
       const source = truncateText(q.source_ref || "", 24);
       const prompt = truncateText(q.prompt || "", 80);
       const difficulty = q.difficulty ? String(q.difficulty) : "n/a";
+      const checked = managerSelectedIds.has(q.id);
       row.innerHTML = `
+        <td><input type="checkbox" data-action="select" data-id="${escapeHtml(q.id)}" ${checked ? "checked" : ""} /></td>
         <td>${escapeHtml(q.id)}</td>
         <td>${escapeHtml(getTopicName(q.topicId))}</td>
         <td>${escapeHtml(q.type)}</td>
@@ -2028,6 +2254,11 @@
     ui.managerLoadMore.disabled = showing >= total;
     ui.managerLoadMore.style.opacity = showing >= total ? "0.5" : "1";
     ui.managerMeta.textContent = `Total questions: ${dataStore.questions.length}`;
+    if (ui.managerSelectAllPage) {
+      ui.managerSelectAllPage.checked =
+        managerVisibleIds.length > 0 &&
+        managerVisibleIds.every((id) => managerSelectedIds.has(id));
+    }
     renderCoveragePanel();
     logger.debug("manager", "list render", { total, showing });
   }
@@ -2040,7 +2271,7 @@
       if (!seeded && !state.managerShowCustom) return false;
       return true;
     });
-    const topics = dataStore.topics;
+    const topics = getSortedTopics();
     const types = getManagerTypeList();
     const byTopic = {};
     const byType = {};
@@ -2062,7 +2293,7 @@
     });
 
     const topicLines = topics.map(
-      (t) => `${t.name}: ${byTopic[t.id] || 0}`
+      (t) => `${getTopicDisplayPath(t.id)}: ${byTopic[t.id] || 0}`
     );
     const typeLines = types.map((t) => `${t}: ${byType[t] || 0}`);
 
@@ -2070,7 +2301,7 @@
     topics.forEach((t) => {
       types.forEach((type) => {
         if ((matrix[t.id] && matrix[t.id][type]) || 0) return;
-        gaps.push(`${t.name} -> ${type}`);
+        gaps.push(`${getTopicDisplayPath(t.id)} -> ${type}`);
       });
     });
 
@@ -2084,7 +2315,7 @@
             return `<td class="${klass}">${count}</td>`;
           })
           .join("");
-        return `<tr><th>${escapeHtml(t.name)}</th>${cells}</tr>`;
+        return `<tr><th>${escapeHtml(getTopicDisplayPath(t.id))}</th>${cells}</tr>`;
       })
       .join("");
 
@@ -2116,6 +2347,195 @@
     `;
   }
 
+  function updateManagerSelectionUI() {
+    const validIds = new Set(dataStore.questions.map((q) => q.id));
+    managerSelectedIds = new Set(
+      Array.from(managerSelectedIds).filter((id) => validIds.has(id))
+    );
+    if (ui.managerBulkCount) {
+      const count = managerSelectedIds.size;
+      ui.managerBulkCount.textContent =
+        count === 0 ? "No questions selected." : `${count} selected.`;
+    }
+    const disabled = managerSelectedIds.size === 0;
+    if (ui.managerBulkMove) ui.managerBulkMove.disabled = disabled;
+    if (ui.managerBulkDelete) ui.managerBulkDelete.disabled = disabled;
+    if (ui.managerBulkTypeApply) ui.managerBulkTypeApply.disabled = disabled;
+  }
+
+  function setTopicActionStatus(message, isError) {
+    if (!ui.topicActionStatus) return;
+    ui.topicActionStatus.textContent = message;
+    ui.topicActionStatus.style.color = isError ? "var(--error)" : "inherit";
+  }
+
+  async function createTopic() {
+    const id = ui.topicCreateId.value.trim();
+    const name = ui.topicCreateName.value.trim();
+    const parentId = ui.topicCreateParent.value || null;
+    if (!id) {
+      setTopicActionStatus("Topic id is required.", true);
+      return;
+    }
+    try {
+      await apiFetch("/topics", {
+        method: "POST",
+        body: JSON.stringify({
+          id,
+          name,
+          parent_id: parentId || null
+        })
+      });
+      setTopicActionStatus(`Created topic ${id}.`, false);
+      ui.topicCreateId.value = "";
+      ui.topicCreateName.value = "";
+      refreshDataStore();
+    } catch (error) {
+      setTopicActionStatus("Failed to create topic.", true);
+      logger.error("manager", "topic create failed", { error: String(error) });
+    }
+  }
+
+  async function renameTopic() {
+    const id = ui.topicRenameId.value;
+    const name = ui.topicRenameName.value.trim();
+    if (!id || !name) {
+      setTopicActionStatus("Select a topic and enter a new name.", true);
+      return;
+    }
+    try {
+      await apiFetch(`/topics/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        body: JSON.stringify({ name })
+      });
+      setTopicActionStatus(`Renamed ${id}.`, false);
+      ui.topicRenameName.value = "";
+      refreshDataStore();
+    } catch (error) {
+      setTopicActionStatus("Failed to rename topic.", true);
+      logger.error("manager", "topic rename failed", { error: String(error) });
+    }
+  }
+
+  async function moveTopic() {
+    const id = ui.topicMoveId.value;
+    const parentId = ui.topicMoveParent.value || null;
+    if (!id) {
+      setTopicActionStatus("Select a topic to move.", true);
+      return;
+    }
+    try {
+      await apiFetch(`/topics/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        body: JSON.stringify({ parent_id: parentId || null })
+      });
+      setTopicActionStatus(`Moved ${id}.`, false);
+      refreshDataStore();
+    } catch (error) {
+      setTopicActionStatus("Failed to move topic.", true);
+      logger.error("manager", "topic move failed", { error: String(error) });
+    }
+  }
+
+  async function deleteTopic() {
+    const id = ui.topicDeleteId.value;
+    const mode = ui.topicDeleteMode.value;
+    if (!id) {
+      setTopicActionStatus("Select a topic to delete.", true);
+      return;
+    }
+    const ok = window.confirm(
+      mode === "reassign"
+        ? "Delete topic and reassign its children and questions?"
+        : "Delete topic and everything inside?"
+    );
+    if (!ok) return;
+    try {
+      await apiFetch(`/topics/${encodeURIComponent(id)}?mode=${encodeURIComponent(mode)}`, {
+        method: "DELETE"
+      });
+      setTopicActionStatus(`Deleted ${id}.`, false);
+      refreshDataStore();
+    } catch (error) {
+      setTopicActionStatus("Failed to delete topic.", true);
+      logger.error("manager", "topic delete failed", { error: String(error) });
+    }
+  }
+
+  async function bulkDeleteQuestions() {
+    if (managerSelectedIds.size === 0) return;
+    const ok = window.confirm("Delete selected questions?");
+    if (!ok) return;
+    try {
+      await apiFetch("/questions/bulk", {
+        method: "POST",
+        body: JSON.stringify({ action: "delete", ids: Array.from(managerSelectedIds) })
+      });
+      managerSelectedIds.clear();
+      refreshDataStore();
+    } catch (error) {
+      showError("Bulk delete failed.", String(error));
+    }
+  }
+
+  async function bulkMoveQuestions() {
+    if (managerSelectedIds.size === 0) return;
+    const topicId = ui.managerBulkMoveTopic.value;
+    if (!topicId) {
+      showError("Select a target topic.");
+      return;
+    }
+    try {
+      await apiFetch("/questions/bulk", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "move",
+          ids: Array.from(managerSelectedIds),
+          topic_id: topicId
+        })
+      });
+      managerSelectedIds.clear();
+      refreshDataStore();
+    } catch (error) {
+      showError("Bulk move failed.", String(error));
+    }
+  }
+
+  async function bulkChangeQuestionType() {
+    if (managerSelectedIds.size === 0) return;
+    const targetType = ui.managerBulkType.value;
+    const selected = dataStore.questions.filter((q) => managerSelectedIds.has(q.id));
+    const stemIds = new Set(selected.map((q) => q.stem_id).filter(Boolean));
+    if (stemIds.size !== 1) {
+      showError("Bulk type change requires a shared stem_id.");
+      return;
+    }
+    const compatible = selected.every((q) => {
+      if (q.type === targetType) return true;
+      if (q.type === "single" && targetType === "multi") return true;
+      if (q.type === "multi" && targetType === "single") return true;
+      return false;
+    });
+    if (!compatible) {
+      showError("Selected questions are not compatible for this type change.");
+      return;
+    }
+    try {
+      await apiFetch("/questions/bulk", {
+        method: "POST",
+        body: JSON.stringify({
+          action: "change_type",
+          ids: Array.from(managerSelectedIds),
+          target_type: targetType
+        })
+      });
+      managerSelectedIds.clear();
+      refreshDataStore();
+    } catch (error) {
+      showError("Bulk type change failed.", String(error));
+    }
+  }
+
   function openManagerEdit(id) {
     const question = dataStore.questions.find((q) => q.id === id);
     if (!question) {
@@ -2135,8 +2555,9 @@
     ui.managerEditTags.value = Array.isArray(question.tags) ? question.tags.join(", ") : "";
     ui.managerEditDifficulty.value = question.difficulty || "";
 
-    const topicOptions = dataStore.topics.map(
-      (t) => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`
+    const topicOptions = getSortedTopics().map(
+      (t) =>
+        `<option value="${escapeHtml(t.id)}">${escapeHtml(formatTopicLabel(t))}</option>`
     );
     ui.managerEditTopic.innerHTML = topicOptions.join("");
     ui.managerEditTopic.value = question.topicId;
@@ -2200,7 +2621,7 @@
     if (ui.managerEdit) ui.managerEdit.classList.add("hidden");
   }
 
-  function saveManagerEdit() {
+  async function saveManagerEdit() {
     if (!managerEditId) return;
     const question = dataStore.questions.find((q) => q.id === managerEditId);
     if (!question) {
@@ -2257,18 +2678,21 @@
       return;
     }
 
-    const overrides = loadLocalQuestionOverrides();
-    overrides[updated.id] = updated;
-    saveLocalQuestionOverrides(overrides);
-    applyLocalQuestionMutations();
-    renderManagerControls();
-    renderManager();
-    renderDashboard();
-    ui.managerEditStatus.textContent = "Saved.";
-    logger.debug("manager", "edit saved", { id: updated.id });
+    try {
+      await apiFetch(`/questions/${encodeURIComponent(updated.id)}`, {
+        method: "PUT",
+        body: JSON.stringify(updated)
+      });
+      refreshDataStore();
+      ui.managerEditStatus.textContent = "Saved.";
+      logger.debug("manager", "edit saved", { id: updated.id });
+    } catch (error) {
+      ui.managerEditStatus.textContent = "Save failed.";
+      logger.error("manager", "edit save failed", { error: String(error) });
+    }
   }
 
-  function confirmDeleteQuestion(id) {
+  async function confirmDeleteQuestion(id) {
     const question = dataStore.questions.find((q) => q.id === id);
     if (!question) {
       showError("Question not found.", `Missing id ${id}`);
@@ -2281,278 +2705,374 @@
     logger.debug("manager", "delete confirm", { id });
     const ok = window.confirm("Are you sure?");
     if (!ok) return;
-    const deletes = loadLocalQuestionDeletes();
-    deletes.add(id);
-    saveLocalQuestionDeletes(deletes);
-    applyLocalQuestionMutations();
-    if (managerEditId === id) {
-      closeManagerEdit();
+    try {
+      await apiFetch(`/questions/${encodeURIComponent(id)}`, { method: "DELETE" });
+      if (managerEditId === id) {
+        closeManagerEdit();
+      }
+      refreshDataStore();
+      logger.debug("manager", "question deleted", { id });
+    } catch (error) {
+      showError("Delete failed.", String(error));
+      logger.error("manager", "question delete failed", { error: String(error) });
     }
-    renderManagerControls();
-    renderManager();
-    renderDashboard();
-    logger.debug("manager", "question deleted", { id });
   }
 
   function buildAiFormatSpecText() {
-    return [
-      "AP2 Question Pack Format Guide",
-      "Schema: ap2-questionpack-v1",
-      "",
-      "Top-level JSON structure:",
-      "{",
-      "  \"schema\": \"ap2-questionpack-v1\",",
-      "  \"meta\": {",
-      "    \"source\": \"chatgpt\",",
-      "    \"created_at\": \"YYYY-MM-DD\"",
-      "  },",
-      "  \"topics\": [",
-      "    { \"slug\": \"topic-slug\", \"title\": \"Topic Title\", \"topic_area\": \"Area\" }",
-      "  ],",
-      "  \"questions\": [",
-      "    { ... }",
-      "  ]",
-      "}",
-      "",
-      "General rules:",
-      "- Return ONLY valid JSON. No markdown fences. No commentary.",
-      "- Use ASCII only if required by project rules.",
-      "- \"schema\" must be exactly ap2-questionpack-v1.",
-      "- \"topics\" is optional but recommended. Use unique topic slugs.",
-      "- Each question must have unique \"id\" and a \"topic_slug\".",
-      "- \"topic_slug\" should match a slug in \"topics\" or create a new topic.",
-      "- Required fields for all questions: id, type, topic_slug, prompt.",
-      "- Optional fields: explanation, source_ref, tags.",
-      "- Do not invent external URLs. Use source_ref as plain text.",
-      "",
-      "Supported types and required fields:",
-      "- single: options (array), correct (array with 1 index)",
-      "- multi: options (array), correct (array of indices)",
-      "- truefalse: correct (boolean)",
-      "- fillblank: answers (array of accepted answers)",
-      "- matching: left (array), right (array), optional pairs (array of [leftIndex, rightIndex])",
-      "- ordering: items (array), correct_order (array of indices, 0-based)",
-      "- guessword: answers (array). Alias of type guess.",
-      "- explainterm: keywords (array). Alias of type explain.",
-      "- exam: answer_key (string). Self-grade by default.",
-      "",
-      "Example: single",
-      "{",
-      "  \"schema\": \"ap2-questionpack-v1\",",
-      "  \"meta\": { \"source\": \"example\" },",
-      "  \"topics\": [ { \"slug\": \"network-basics\", \"title\": \"Network Basics\" } ],",
-      "  \"questions\": [",
-      "    {",
-      "      \"id\": \"q_single_01\",",
-      "      \"type\": \"single\",",
-      "      \"topic_slug\": \"network-basics\",",
-      "      \"prompt\": \"What does LAN stand for?\",",
-      "      \"options\": [\"Local Area Network\", \"Long Area Node\", \"Low Access Node\"],",
-      "      \"correct\": [0],",
-      "      \"explanation\": \"LAN means Local Area Network.\",",
-      "      \"source_ref\": \"internal:manual\",",
-      "      \"tags\": [\"network\"]",
-      "    }",
-      "  ]",
-      "}",
-      "",
-      "Example: multi",
-      "{",
-      "  \"schema\": \"ap2-questionpack-v1\",",
-      "  \"meta\": { \"source\": \"example\" },",
-      "  \"topics\": [ { \"slug\": \"safety\", \"title\": \"Safety\" } ],",
-      "  \"questions\": [",
-      "    {",
-      "      \"id\": \"q_multi_01\",",
-      "      \"type\": \"multi\",",
-      "      \"topic_slug\": \"safety\",",
-      "      \"prompt\": \"Select all safety checks.\",",
-      "      \"options\": [\"Brake test\", \"Mirror check\", \"Open all windows\", \"Seat belt\"],",
-      "      \"correct\": [0, 1, 3],",
-      "      \"explanation\": \"Brake, mirrors, and seat belt are required.\",",
-      "      \"source_ref\": \"internal:training\"",
-      "    }",
-      "  ]",
-      "}",
-      "",
-      "Example: truefalse",
-      "{",
-      "  \"schema\": \"ap2-questionpack-v1\",",
-      "  \"meta\": { \"source\": \"example\" },",
-      "  \"topics\": [ { \"slug\": \"rules\", \"title\": \"Rules\" } ],",
-      "  \"questions\": [",
-      "    {",
-      "      \"id\": \"q_tf_01\",",
-      "      \"type\": \"truefalse\",",
-      "      \"topic_slug\": \"rules\",",
-      "      \"prompt\": \"You must stop at a red light.\",",
-      "      \"correct\": true,",
-      "      \"explanation\": \"Red means stop.\",",
-      "      \"source_ref\": \"internal:rules\"",
-      "    }",
-      "  ]",
-      "}",
-      "",
-      "Example: fillblank",
-      "{",
-      "  \"schema\": \"ap2-questionpack-v1\",",
-      "  \"meta\": { \"source\": \"example\" },",
-      "  \"topics\": [ { \"slug\": \"signals\", \"title\": \"Signals\" } ],",
-      "  \"questions\": [",
-      "    {",
-      "      \"id\": \"q_fill_01\",",
-      "      \"type\": \"fillblank\",",
-      "      \"topic_slug\": \"signals\",",
-      "      \"prompt\": \"A red traffic light means ___ .\",",
-      "      \"answers\": [\"stop\", \"halt\"],",
-      "      \"explanation\": \"Red means stop.\",",
-      "      \"source_ref\": \"internal:signals\"",
-      "    }",
-      "  ]",
-      "}",
-      "",
-      "Example: matching",
-      "{",
-      "  \"schema\": \"ap2-questionpack-v1\",",
-      "  \"meta\": { \"source\": \"example\" },",
-      "  \"topics\": [ { \"slug\": \"signs\", \"title\": \"Signs\" } ],",
-      "  \"questions\": [",
-      "    {",
-      "      \"id\": \"q_match_01\",",
-      "      \"type\": \"matching\",",
-      "      \"topic_slug\": \"signs\",",
-      "      \"prompt\": \"Match the sign to its meaning.\",",
-      "      \"left\": [\"Stop\", \"Yield\"],",
-      "      \"right\": [\"Give way\", \"Come to a full stop\"],",
-      "      \"pairs\": [[0, 1], [1, 0]],",
-      "      \"explanation\": \"Stop means full stop, yield means give way.\",",
-      "      \"source_ref\": \"internal:signs\"",
-      "    }",
-      "  ]",
-      "}",
-      "",
-      "Example: ordering",
-      "{",
-      "  \"schema\": \"ap2-questionpack-v1\",",
-      "  \"meta\": { \"source\": \"example\" },",
-      "  \"topics\": [ { \"slug\": \"procedure\", \"title\": \"Procedure\" } ],",
-      "  \"questions\": [",
-      "    {",
-      "      \"id\": \"q_order_01\",",
-      "      \"type\": \"ordering\",",
-      "      \"topic_slug\": \"procedure\",",
-      "      \"prompt\": \"Order the steps to start the engine.\",",
-      "      \"items\": [\"Insert key\", \"Press clutch\", \"Start engine\"],",
-      "      \"correct_order\": [0, 1, 2],",
-      "      \"explanation\": \"Insert key, press clutch, then start.\",",
-      "      \"source_ref\": \"internal:procedure\"",
-      "    }",
-      "  ]",
-      "}",
-      "",
-      "Example: guessword",
-      "{",
-      "  \"schema\": \"ap2-questionpack-v1\",",
-      "  \"meta\": { \"source\": \"example\" },",
-      "  \"topics\": [ { \"slug\": \"definitions\", \"title\": \"Definitions\" } ],",
-      "  \"questions\": [",
-      "    {",
-      "      \"id\": \"q_guess_01\",",
-      "      \"type\": \"guessword\",",
-      "      \"topic_slug\": \"definitions\",",
-      "      \"prompt\": \"Term for a vehicle that is not moving.\",",
-      "      \"answers\": [\"stationary\", \"stopped\"],",
-      "      \"explanation\": \"Stationary or stopped.\",",
-      "      \"source_ref\": \"internal:definitions\"",
-      "    }",
-      "  ]",
-      "}",
-      "",
-      "Example: explainterm",
-      "{",
-      "  \"schema\": \"ap2-questionpack-v1\",",
-      "  \"meta\": { \"source\": \"example\" },",
-      "  \"topics\": [ { \"slug\": \"terms\", \"title\": \"Terms\" } ],",
-      "  \"questions\": [",
-      "    {",
-      "      \"id\": \"q_explain_01\",",
-      "      \"type\": \"explainterm\",",
-      "      \"topic_slug\": \"terms\",",
-      "      \"prompt\": \"Explain right of way.\",",
-      "      \"keywords\": [\"priority\", \"yield\", \"who goes first\"],",
-      "      \"explanation\": \"Right of way defines priority.\",",
-      "      \"source_ref\": \"internal:terms\"",
-      "      }",
-      "  ]",
-      "}",
-      "",
-      "Example: exam",
-      "{",
-      "  \"schema\": \"ap2-questionpack-v1\",",
-      "  \"meta\": { \"source\": \"example\" },",
-      "  \"topics\": [ { \"slug\": \"exam\", \"title\": \"Exam\" } ],",
-      "  \"questions\": [",
-      "    {",
-      "      \"id\": \"q_exam_01\",",
-      "      \"type\": \"exam\",",
-      "      \"topic_slug\": \"exam\",",
-      "      \"prompt\": \"Describe how to react to an emergency stop.\",",
-      "      \"answer_key\": \"Brake firmly, maintain control, use hazard lights.\",",
-      "      \"explanation\": \"Key steps are braking and control.\",",
-      "      \"source_ref\": \"internal:exam\"",
-      "    }",
-      "  ]",
-      "}",
-      ""
-    ].join("\n");
+    return `AP2 Question Pack Format Guide
+Schema: ap2-questionpack-v2
+
+Top-level JSON structure:
+{
+  "schema": "ap2-questionpack-v2",
+  "meta": {
+    "source": "chatgpt",
+    "created_at": "YYYY-MM-DD",
+    "topic_budget": { "max_new_topics": 3, "max_depth": 4 }
+  },
+  "topics": [
+    { "slug": "topic-id", "title": "Topic Name", "parent_topic_id": null, "path": "topic-id", "depth": 0, "topic_area": "area" }
+  ],
+  "stems": [
+    {
+      "stem_id": "stem_001",
+      "stem_text": "Question stem or task statement",
+      "topic_id": "topic-id",
+      "variants": [ { ... question variant ... } ]
+    }
+  ],
+  "questions": [
+    { ... standalone question ... }
+  ]
+}
+
+Global rules:
+- Return ONLY valid JSON. No markdown fences. No commentary.
+- Output structured data only. No extra keys outside the schema.
+- "schema" must be exactly "ap2-questionpack-v2".
+- Use unique ids for topics, stems, and questions.
+- All questions must be attached to a topic, either via topic_slug or via stem.topic_id.
+- Topic budget: reuse existing topics first. Create at most meta.topic_budget.max_new_topics new topics.
+- Topic depth: do not exceed meta.topic_budget.max_depth.
+- Prefer fewer, deeper topics over many flat topics.
+- DO NOT invent new question types. Use only supported types.
+- Do not invent external URLs. Use source_ref as plain text.
+- Ordering: topics -> stems -> questions.
+
+Topic Tree model (required for hierarchy):
+Topic fields:
+- slug (topic_id): string, unique id
+- title: display name
+- parent_topic_id: nullable string (root if null)
+- path: computed path (parent_path/slug)
+- depth: integer depth (root = 0)
+- topic_area: optional grouping
+Rules:
+- Reuse existing topics when a similar topic already exists.
+- Only create a new topic when the stem does not fit any existing path.
+- Never create many sibling topics when a single parent can group them.
+
+Stem reuse model:
+Each stem is created once, then variants reuse the same stem_text.
+Stem fields:
+- stem_id, stem_text, topic_id
+Variant fields:
+- id, type, plus type-specific fields
+Rules:
+- Variants must keep the same meaning as stem_text.
+- Variants should not contradict each other.
+- If variant includes topic_slug, it must match stem.topic_id.
+
+Supported question types (catalog)
+
+Type: single
+ID: "single"
+Purpose: One correct option among several.
+Input requirements: id, type, prompt, options[], correct[one index], topic_slug or stem.
+Output schema:
+{ "id": "...", "type": "single", "topic_slug": "...", "prompt": "...", "options": ["A","B"], "correct": [0] }
+Generation rules:
+1. Write a clear prompt.
+2. Provide 3 to 5 options.
+3. Exactly one correct index in correct[].
+Validation rules:
+- options length >= 2
+- correct length == 1
+- correct index is within options range
+DOs:
+- Make distractors plausible.
+- Keep options similar length.
+DON'Ts:
+- Do not add multiple correct indices.
+- Do not use "all of the above".
+Example 1:
+{ "id": "q_single_01", "type": "single", "topic_slug": "network-basics", "prompt": "What does LAN stand for?", "options": ["Local Area Network","Long Area Node","Low Access Node"], "correct": [0] }
+Example 2:
+{ "id": "q_single_02", "type": "single", "topic_slug": "security-basics", "prompt": "Which control is preventive?", "options": ["Firewall","Audit log","Forensic report"], "correct": [0] }
+
+Type: multi
+ID: "multi"
+Purpose: Multiple correct options.
+Input requirements: id, type, prompt, options[], correct[one or more indices], topic_slug or stem.
+Output schema:
+{ "id": "...", "type": "multi", "topic_slug": "...", "prompt": "...", "options": ["A","B","C"], "correct": [0,2] }
+Generation rules:
+1. Write a prompt that implies multiple answers.
+2. Provide 4 to 6 options.
+3. Provide 2+ correct indices.
+Validation rules:
+- options length >= 3
+- correct length >= 1
+- all correct indices within range
+DOs:
+- Include at least one strong distractor.
+- Keep wording consistent.
+DON'Ts:
+- Do not make all options correct.
+- Do not mix single-answer wording with multi-answer format.
+Example 1:
+{ "id": "q_multi_01", "type": "multi", "topic_slug": "network-osi", "prompt": "Which are Layer 2 protocols?", "options": ["Ethernet","IP","ARP","TCP"], "correct": [0,2] }
+Example 2:
+{ "id": "q_multi_02", "type": "multi", "topic_slug": "safety-electric", "prompt": "Select all safety checks before maintenance.", "options": ["Lockout","Verify absence of voltage","Wear gloves","Skip documentation"], "correct": [0,1,2] }
+
+Type: truefalse
+ID: "truefalse"
+Purpose: A statement that is either true or false.
+Input requirements: id, type, prompt, correct(boolean), topic_slug or stem.
+Output schema:
+{ "id": "...", "type": "truefalse", "topic_slug": "...", "prompt": "...", "correct": true }
+Generation rules:
+1. Use a single factual statement.
+2. Avoid ambiguous qualifiers.
+Validation rules:
+- correct must be true or false
+DOs:
+- Keep statements concise.
+- Ensure answer is unambiguous.
+DON'Ts:
+- Do not use double negatives.
+- Do not use opinion-based statements.
+Example 1:
+{ "id": "q_tf_01", "type": "truefalse", "topic_slug": "network-ip", "prompt": "IPv4 uses 32-bit addresses.", "correct": true }
+Example 2:
+{ "id": "q_tf_02", "type": "truefalse", "topic_slug": "safety-electric", "prompt": "The protective earth may be switched.", "correct": false }
+
+Type: fillblank
+ID: "fillblank"
+Purpose: Fill in missing word(s).
+Input requirements: id, type, prompt or text, answers[], topic_slug or stem.
+Output schema:
+{ "id": "...", "type": "fillblank", "topic_slug": "...", "prompt": "IPv4 has ___ bits.", "answers": ["32"] }
+Generation rules:
+1. Use a single blank (___) unless multiple blanks are required.
+2. Provide all acceptable answers (case-insensitive).
+Validation rules:
+- answers is a non-empty array
+DOs:
+- Include synonyms if valid.
+- Keep blanks short.
+DON'Ts:
+- Do not use multiple unrelated blanks.
+- Do not omit expected answer variants.
+Example 1:
+{ "id": "q_fb_01", "type": "fillblank", "topic_slug": "network-ip", "prompt": "IPv4 has ___ bits.", "answers": ["32"] }
+Example 2:
+{ "id": "q_fb_02", "type": "fillblank", "topic_slug": "math-ohm", "prompt": "U = R * ___.", "answers": ["I","i"] }
+
+Type: matching
+ID: "matching"
+Purpose: Match items from left to right.
+Input requirements: id, type, prompt, left[], right[], pairs[], topic_slug or stem.
+Output schema:
+{ "id": "...", "type": "matching", "topic_slug": "...", "prompt": "...", "left": ["A","B"], "right": ["1","2"], "pairs": [[0,1],[1,0]] }
+Generation rules:
+1. Provide equal length left/right lists.
+2. Provide pairs mapping indices.
+Validation rules:
+- left and right arrays non-empty
+- pairs indices within bounds
+DOs:
+- Keep items short.
+- Avoid duplicate items on one side.
+DON'Ts:
+- Do not reuse the same right item for multiple left items unless intended.
+- Do not omit pairs when lengths differ.
+Example 1:
+{ "id": "q_match_01", "type": "matching", "topic_slug": "network-services", "prompt": "Match service to function.", "left": ["DNS","DHCP"], "right": ["Name resolution","IP assignment"], "pairs": [[0,0],[1,1]] }
+Example 2:
+{ "id": "q_match_02", "type": "matching", "topic_slug": "security-cia", "prompt": "Match CIA letter to meaning.", "left": ["C","I","A"], "right": ["Confidentiality","Integrity","Availability"], "pairs": [[0,0],[1,1],[2,2]] }
+
+Type: ordering
+ID: "ordering"
+Purpose: Put steps in correct sequence.
+Input requirements: id, type, prompt, items[], correct_order[], topic_slug or stem.
+Output schema:
+{ "id": "...", "type": "ordering", "topic_slug": "...", "prompt": "...", "items": ["A","B","C"], "correct_order": [0,1,2] }
+Generation rules:
+1. Provide 3 to 6 steps.
+2. correct_order is a permutation of item indices.
+Validation rules:
+- items length >= 2
+- correct_order has same length and valid indices
+DOs:
+- Keep each step concise.
+- Ensure only one correct order.
+DON'Ts:
+- Do not include duplicate steps.
+- Do not skip indices.
+Example 1:
+{ "id": "q_order_01", "type": "ordering", "topic_slug": "troubleshooting", "prompt": "Order the steps.", "items": ["Check physical","Check config","Test connectivity"], "correct_order": [0,1,2] }
+Example 2:
+{ "id": "q_order_02", "type": "ordering", "topic_slug": "backup-process", "prompt": "Order the backup workflow.", "items": ["Plan","Run backup","Test restore"], "correct_order": [0,1,2] }
+
+Type: guessword
+ID: "guessword"
+Purpose: Short answer, keyword or term.
+Input requirements: id, type, prompt, answers[], topic_slug or stem.
+Output schema:
+{ "id": "...", "type": "guessword", "topic_slug": "...", "prompt": "...", "answers": ["term"] }
+Generation rules:
+1. Prompt should ask for a single term or short phrase.
+2. Provide all acceptable answer variants.
+Validation rules:
+- answers array is non-empty
+DOs:
+- Include abbreviations if accepted.
+- Keep answers short.
+DON'Ts:
+- Do not use full-sentence answers.
+- Do not include unrelated synonyms.
+Example 1:
+{ "id": "q_guess_01", "type": "guessword", "topic_slug": "security-cia", "prompt": "What does CIA stand for (first word)?", "answers": ["confidentiality"] }
+Example 2:
+{ "id": "q_guess_02", "type": "guessword", "topic_slug": "network-vlan", "prompt": "A VLAN tag standard is ___ .", "answers": ["802.1q","8021q"] }
+
+Type: explainterm
+ID: "explainterm"
+Purpose: Explain a term in keywords.
+Input requirements: id, type, prompt, keywords[], topic_slug or stem.
+Output schema:
+{ "id": "...", "type": "explainterm", "topic_slug": "...", "prompt": "...", "keywords": ["k1","k2"] }
+Generation rules:
+1. Prompt asks to explain/define.
+2. Keywords list is short and specific.
+Validation rules:
+- keywords array non-empty
+DOs:
+- Include essential concept words.
+- Keep 3 to 6 keywords.
+DON'Ts:
+- Do not include full sentences.
+- Do not include irrelevant buzzwords.
+Example 1:
+{ "id": "q_explain_01", "type": "explainterm", "topic_slug": "network-dhcp", "prompt": "Explain DHCP.", "keywords": ["dynamic","ip address","lease"] }
+Example 2:
+{ "id": "q_explain_02", "type": "explainterm", "topic_slug": "security-cia", "prompt": "Explain availability.", "keywords": ["uptime","resilience","redundancy"] }
+
+Type: exam
+ID: "exam"
+Purpose: Open response, self-graded.
+Input requirements: id, type, prompt, answer_key, topic_slug or stem.
+Output schema:
+{ "id": "...", "type": "exam", "topic_slug": "...", "prompt": "...", "answer_key": "..." }
+Generation rules:
+1. Prompt should be open-ended but focused.
+2. answer_key lists key points.
+Validation rules:
+- answer_key is non-empty string
+DOs:
+- Keep answer_key short and scorable.
+- Use bullet-like phrasing inside answer_key.
+DON'Ts:
+- Do not leave answer_key empty.
+- Do not create multi-part prompts without scoring notes.
+Example 1:
+{ "id": "q_exam_01", "type": "exam", "topic_slug": "safety-electric", "prompt": "Describe the five safety rules.", "answer_key": "Disconnect; Secure; Verify; Ground; Cover adjacent." }
+Example 2:
+{ "id": "q_exam_02", "type": "exam", "topic_slug": "network-troubleshooting", "prompt": "Explain a DHCP failure workflow.", "answer_key": "Check link; Verify scope; Confirm relay; Test lease." }
+
+Topic tree example with 3 levels:
+{
+  "topics": [
+    { "slug": "network", "title": "Network", "parent_topic_id": null, "path": "network", "depth": 0 },
+    { "slug": "ip", "title": "IP", "parent_topic_id": "network", "path": "network/ip", "depth": 1 },
+    { "slug": "ipv4", "title": "IPv4", "parent_topic_id": "ip", "path": "network/ip/ipv4", "depth": 2 }
+  ]
+}
+
+Stem reuse example (one stem, three variants):
+{
+  "stems": [
+    {
+      "stem_id": "stem_usa_president",
+      "stem_text": "Who is the president of the USA?",
+      "topic_id": "civics-us",
+      "variants": [
+        { "id": "q_tf_usa_president", "type": "truefalse", "prompt": "The president of the USA is the head of the executive branch.", "correct": true },
+        { "id": "q_mc_usa_president", "type": "single", "prompt": "Who is the president of the USA?", "options": ["A","B","C"], "correct": [0] },
+        { "id": "q_fb_usa_president", "type": "fillblank", "prompt": "The president of the USA is ___ .", "answers": ["Name"] }
+      ]
+    }
+  ]
+}
+`;
   }
 
   function buildAiPromptTemplateText() {
-    return [
-      "CHATGPT PROMPT TEMPLATE",
-      "",
-      "You are generating a JSON question pack for this app.",
-      "Return ONLY valid JSON. No markdown fences. No commentary.",
-      "Use ASCII only if required by project rules.",
-      "Schema must be: ap2-questionpack-v1",
-      "",
-      "SUPPORTED TYPES:",
-      "single, multi, truefalse, fillblank, matching, ordering, guessword, explainterm, exam",
-      "",
-      "TOP-LEVEL FORMAT:",
-      "{",
-      "  \"schema\": \"ap2-questionpack-v1\",",
-      "  \"meta\": { \"source\": \"chatgpt\", \"created_at\": \"YYYY-MM-DD\" },",
-      "  \"topics\": [ { \"slug\": \"topic-slug\", \"title\": \"Topic Title\", \"topic_area\": \"Area\" } ],",
-      "  \"questions\": [ { ... } ]",
-      "}",
-      "",
-      "FIELD RULES (summary):",
-      "- Every question: id, type, topic_slug, prompt.",
-      "- single/multi: options array, correct array of indices.",
-      "- truefalse: correct true or false.",
-      "- fillblank: answers array.",
-      "- matching: left array, right array, optional pairs array of [leftIndex, rightIndex].",
-      "- ordering: items array, correct_order array of indices (0-based).",
-      "- guessword: answers array.",
-      "- explainterm: keywords array.",
-      "- exam: answer_key string.",
-      "- Do not invent external URLs. Use source_ref as plain text.",
-      "",
-      "CONSTRAINTS (fill in before sending to ChatGPT):",
-      "Number of questions: [ENTER TOTAL COUNT]",
-      "Difficulty distribution: [EASY %, MEDIUM %, HARD %]",
-      "Tags to use: [TAG1, TAG2, ...]",
-      "Topic list and source info:",
-      "[PASTE TOPIC INFORMATION HERE]",
-      "",
-      "OUTPUT RULES:",
-      "- Return only JSON.",
-      "- Use unique ids for each question.",
-      "- Use topic_slug that matches topics[].slug.",
-      "",
-      "Now generate the JSON question pack."
-    ].join("\n");
+    return `CHATGPT PROMPT TEMPLATE
+
+You are generating a JSON question pack for this app.
+Return ONLY valid JSON. No markdown fences. No commentary.
+Schema must be: ap2-questionpack-v2
+
+SUPPORTED TYPES:
+single, multi, truefalse, fillblank, matching, ordering, guessword, explainterm, exam
+
+TOP-LEVEL FORMAT:
+{
+  "schema": "ap2-questionpack-v2",
+  "meta": {
+    "source": "chatgpt",
+    "created_at": "YYYY-MM-DD",
+    "topic_budget": { "max_new_topics": 3, "max_depth": 4 }
+  },
+  "topics": [
+    { "slug": "topic-id", "title": "Topic Title", "parent_topic_id": null, "path": "topic-id", "depth": 0, "topic_area": "Area" }
+  ],
+  "stems": [
+    { "stem_id": "stem_001", "stem_text": "Question stem", "topic_id": "topic-id", "variants": [ { ... } ] }
+  ],
+  "questions": [ { ... } ]
+}
+
+FIELD RULES (summary):
+- Use topic tree: slug, title, parent_topic_id, path, depth.
+- Prefer stems + variants for reuse. questions[] is for standalone items.
+- Every question/variant: id, type, prompt plus type-specific fields.
+- single/multi: options array, correct array of indices (0-based).
+- truefalse: correct true or false.
+- fillblank: answers array.
+- matching: left array, right array, pairs array of [leftIndex, rightIndex].
+- ordering: items array, correct_order array of indices (0-based).
+- guessword: answers array.
+- explainterm: keywords array.
+- exam: answer_key string.
+- Do not invent external URLs. Use source_ref as plain text.
+
+CONSTRAINTS (fill in before sending to ChatGPT):
+Number of questions: [ENTER TOTAL COUNT]
+Difficulty distribution: [EASY %, MEDIUM %, HARD %]
+Tags to use: [TAG1, TAG2, ...]
+Topic list and source info:
+[PASTE TOPIC INFORMATION HERE]
+
+OUTPUT RULES:
+- Return only JSON.
+- Use unique ids for each topic, stem, and question.
+- Use topic_slug that matches topics[].slug or stem.topic_id.
+- Obey topic budget and depth limits.
+
+Now generate the JSON question pack.`;
   }
 
   function downloadTextFile(filename, content, kind) {
@@ -3179,7 +3699,7 @@
       questionOrder = new Map(
         dataStore.questions.map((q, idx) => [q.id, idx])
       );
-      applyLocalQuestionMutations();
+      await migrateLocalQuestionMutations();
       const attemptsRes = await apiFetch("/attempts");
       attempts = attemptsRes.attempts || [];
       const appointmentsRes = await apiFetch("/appointments");

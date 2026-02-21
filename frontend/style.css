@@ -416,6 +416,47 @@ body {
   flex-wrap: wrap;
 }
 
+.manager-tools {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  margin: 12px 0;
+}
+
+.manager-tools-block {
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  padding: 12px;
+  background: #fff;
+}
+
+.manager-tools-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  align-items: end;
+  margin-bottom: 8px;
+}
+
+.manager-tools-grid label {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.manager-tools-grid input,
+.manager-tools-grid select {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px;
+  font-family: inherit;
+  font-size: 14px;
+}
+
+.manager-tools-note {
+  font-size: 12px;
+}
+
 .manager-controls {
   display: grid;
   gap: 10px;
@@ -450,6 +491,11 @@ body {
   padding: 8px 6px;
   text-align: left;
   vertical-align: top;
+}
+
+.manager-table th:first-child,
+.manager-table td:first-child {
+  width: 36px;
 }
 
 .manager-table .manager-actions {
