@@ -197,48 +197,6 @@ body {
   background: #faf7f0;
 }
 
-.ai-widget {
-  margin-top: 12px;
-  padding: 10px;
-  border: 1px dashed var(--line);
-  border-radius: 8px;
-  background: #fffaf2;
-  display: grid;
-  gap: 8px;
-}
-
-.ai-widget-title {
-  font-size: 13px;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
-}
-
-.ai-widget-row {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.ai-input {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 8px;
-  font-family: inherit;
-  font-size: 14px;
-  flex: 1 1 220px;
-}
-
-.ai-widget-answer {
-  background: #f6f1e7;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 8px;
-  min-height: 48px;
-  white-space: pre-wrap;
-  font-size: 13px;
-}
-
 .matching-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
