@@ -408,6 +408,123 @@ body {
   margin-top: 12px;
 }
 
+.manager-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.manager-controls {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  margin: 12px 0;
+}
+
+.manager-controls label {
+  display: grid;
+  gap: 6px;
+  font-size: 14px;
+}
+
+.manager-controls input,
+.manager-controls select {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px;
+  font-family: inherit;
+  font-size: 14px;
+}
+
+.manager-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.manager-table th,
+.manager-table td {
+  border-bottom: 1px solid var(--line);
+  padding: 8px 6px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.manager-table .manager-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.manager-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.manager-coverage {
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: #faf7f0;
+  display: grid;
+  gap: 10px;
+}
+
+.manager-coverage-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+.manager-matrix {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.manager-matrix th,
+.manager-matrix td {
+  border: 1px solid var(--line);
+  padding: 4px 6px;
+  text-align: center;
+}
+
+.manager-matrix .missing {
+  background: #fff2f2;
+  color: #991b1b;
+  font-weight: 600;
+}
+
+.manager-edit {
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.manager-edit-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.manager-edit-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.manager-lock {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .result {
   margin-top: 12px;
   padding: 12px;

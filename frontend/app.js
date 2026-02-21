@@ -5,7 +5,9 @@
     apiBase: "ap2_api_base",
     debug: "ap2_debug",
     testMode: "ap2_test_mode",
-    fakeLatency: "ap2_fake_latency"
+    fakeLatency: "ap2_fake_latency",
+    questionOverrides: "ap2_question_overrides",
+    questionDeletes: "ap2_question_deletes"
   };
 
   // Exam date missing in Projekt.txt, keep one placeholder constant.
@@ -24,7 +26,15 @@
     quizMode: "mixed",
     lastImportSummary: null,
     overrideQuestion: null,
-    isAuthenticated: false
+    isAuthenticated: false,
+    managerTopic: "all",
+    managerType: "all",
+    managerSearch: "",
+    managerSort: "newest",
+    managerShowSeeded: true,
+    managerShowCustom: true,
+    managerAllowSeededEdit: false,
+    managerPage: 1
   };
 
   const debugEnabled =
@@ -40,7 +50,8 @@
       dashboard: document.getElementById("page-dashboard"),
       quiz: document.getElementById("page-quiz"),
       calendar: document.getElementById("page-calendar"),
-      builder: document.getElementById("page-builder")
+      builder: document.getElementById("page-builder"),
+      manage: document.getElementById("page-manage")
     },
     navButtons: document.querySelectorAll(".nav-btn"),
     toggleDebug: document.getElementById("toggle-debug"),
@@ -88,6 +99,33 @@
     importPreview: document.getElementById("import-preview"),
     aiGuideSpec: document.getElementById("ai-guide-spec"),
     aiGuidePrompt: document.getElementById("ai-guide-prompt"),
+    managerMeta: document.getElementById("manager-meta"),
+    managerCoverage: document.getElementById("manager-coverage"),
+    managerSearch: document.getElementById("manager-search"),
+    managerTopic: document.getElementById("manager-topic"),
+    managerType: document.getElementById("manager-type"),
+    managerSort: document.getElementById("manager-sort"),
+    managerShowSeeded: document.getElementById("manager-show-seeded"),
+    managerShowCustom: document.getElementById("manager-show-custom"),
+    managerAllowSeededEdit: document.getElementById("manager-allow-seeded-edit"),
+    managerTbody: document.getElementById("manager-tbody"),
+    managerLoadMore: document.getElementById("manager-load-more"),
+    managerCount: document.getElementById("manager-count"),
+    managerEdit: document.getElementById("manager-edit"),
+    managerEditForm: document.getElementById("manager-edit-form"),
+    managerEditClose: document.getElementById("manager-edit-close"),
+    managerEditId: document.getElementById("manager-edit-id"),
+    managerEditTopic: document.getElementById("manager-edit-topic"),
+    managerEditType: document.getElementById("manager-edit-type"),
+    managerEditPrompt: document.getElementById("manager-edit-prompt"),
+    managerEditExplanation: document.getElementById("manager-edit-explanation"),
+    managerEditSource: document.getElementById("manager-edit-source"),
+    managerEditTags: document.getElementById("manager-edit-tags"),
+    managerEditDifficulty: document.getElementById("manager-edit-difficulty"),
+    managerEditDynamic: document.getElementById("manager-edit-dynamic"),
+    managerEditStatus: document.getElementById("manager-edit-status"),
+    managerEditCancel: document.getElementById("manager-edit-cancel"),
+    managerEditSave: document.getElementById("manager-edit-save"),
     builderForm: document.getElementById("builder-form"),
     builderTopic: document.getElementById("builder-topic"),
     builderTopicNew: document.getElementById("builder-topic-new"),
@@ -117,6 +155,8 @@
   };
 
   let dataStore = { topics: [], questions: [] };
+  let questionOrder = new Map();
+  let managerEditId = null;
   let attempts = [];
   let appointments = [];
   let currentQuestionStartAt = null;
@@ -129,6 +169,7 @@
     bindQuiz();
     bindCalendar();
     bindBuilder();
+    bindManager();
     bindLogin();
     applyDebugFlags();
     setRoute("dashboard");
@@ -296,6 +337,78 @@
     }
   }
 
+  function bindManager() {
+    if (!ui.managerSearch) return;
+    ui.managerSearch.addEventListener("input", () => {
+      state.managerSearch = ui.managerSearch.value;
+      state.managerPage = 1;
+      logger.debug("manager", "filter change", { search: state.managerSearch });
+      renderManager();
+    });
+    ui.managerTopic.addEventListener("change", () => {
+      state.managerTopic = ui.managerTopic.value;
+      state.managerPage = 1;
+      logger.debug("manager", "filter change", { topic: state.managerTopic });
+      renderManager();
+    });
+    ui.managerType.addEventListener("change", () => {
+      state.managerType = ui.managerType.value;
+      state.managerPage = 1;
+      logger.debug("manager", "filter change", { type: state.managerType });
+      renderManager();
+    });
+    ui.managerSort.addEventListener("change", () => {
+      state.managerSort = ui.managerSort.value;
+      state.managerPage = 1;
+      logger.debug("manager", "filter change", { sort: state.managerSort });
+      renderManager();
+    });
+    ui.managerShowSeeded.addEventListener("change", () => {
+      state.managerShowSeeded = ui.managerShowSeeded.checked;
+      state.managerPage = 1;
+      logger.debug("manager", "filter change", { showSeeded: state.managerShowSeeded });
+      renderManager();
+    });
+    ui.managerShowCustom.addEventListener("change", () => {
+      state.managerShowCustom = ui.managerShowCustom.checked;
+      state.managerPage = 1;
+      logger.debug("manager", "filter change", { showCustom: state.managerShowCustom });
+      renderManager();
+    });
+    ui.managerAllowSeededEdit.addEventListener("change", () => {
+      state.managerAllowSeededEdit = ui.managerAllowSeededEdit.checked;
+      logger.debug("manager", "filter change", { allowSeededEdit: state.managerAllowSeededEdit });
+      renderManager();
+    });
+    ui.managerLoadMore.addEventListener("click", () => {
+      state.managerPage += 1;
+      logger.debug("manager", "load more", { page: state.managerPage });
+      renderManager();
+    });
+    ui.managerTbody.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const action = target.dataset.action;
+      const id = target.dataset.id;
+      if (!action || !id) return;
+      if (action === "edit") {
+        openManagerEdit(id);
+      } else if (action === "delete") {
+        confirmDeleteQuestion(id);
+      }
+    });
+    ui.managerEditClose.addEventListener("click", () => {
+      closeManagerEdit();
+    });
+    ui.managerEditCancel.addEventListener("click", () => {
+      closeManagerEdit();
+    });
+    ui.managerEditForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      saveManagerEdit();
+    });
+  }
+
   function bindLogin() {
     if (!ui.loginForm) return;
     ui.loginForm.addEventListener("submit", async (event) => {
@@ -357,6 +470,11 @@
     if (route === "builder") {
       logger.debug("builder", "page opened");
     }
+    if (route === "manage") {
+      renderManagerControls();
+      renderManager();
+      logger.debug("manager", "page opened");
+    }
     updateDebugPanel();
   }
 
@@ -371,9 +489,14 @@
     ui.isoWeek.textContent = getISOWeekNumber(now);
 
     const total = dataStore.questions.length;
-    const attemptedIds = new Set(attempts.map((a) => a.questionId));
+    const activeIds = new Set(dataStore.questions.map((q) => q.id));
+    const attemptedIds = new Set(
+      attempts.filter((a) => activeIds.has(a.questionId)).map((a) => a.questionId)
+    );
     const correctIds = new Set(
-      attempts.filter((a) => a.correct).map((a) => a.questionId)
+      attempts
+        .filter((a) => a.correct && activeIds.has(a.questionId))
+        .map((a) => a.questionId)
     );
 
     ui.totalQuestions.textContent = total;
@@ -1679,6 +1802,498 @@
     return lines.join("\n");
   }
 
+  function loadLocalQuestionOverrides() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEYS.questionOverrides);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (error) {
+      logger.error("manager", "override load failed", { error: String(error) });
+      return {};
+    }
+  }
+
+  function saveLocalQuestionOverrides(overrides) {
+    try {
+      localStorage.setItem(STORAGE_KEYS.questionOverrides, JSON.stringify(overrides));
+    } catch (error) {
+      showError("Failed to save edits locally.", String(error));
+      logger.error("manager", "override save failed", { error: String(error) });
+    }
+  }
+
+  function loadLocalQuestionDeletes() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEYS.questionDeletes);
+      if (!raw) return new Set();
+      const parsed = JSON.parse(raw);
+      return new Set(Array.isArray(parsed) ? parsed : []);
+    } catch (error) {
+      logger.error("manager", "deletes load failed", { error: String(error) });
+      return new Set();
+    }
+  }
+
+  function saveLocalQuestionDeletes(deletes) {
+    try {
+      localStorage.setItem(
+        STORAGE_KEYS.questionDeletes,
+        JSON.stringify(Array.from(deletes))
+      );
+    } catch (error) {
+      showError("Failed to save deletes locally.", String(error));
+      logger.error("manager", "deletes save failed", { error: String(error) });
+    }
+  }
+
+  function applyLocalQuestionMutations() {
+    const overrides = loadLocalQuestionOverrides();
+    const deletes = loadLocalQuestionDeletes();
+    dataStore.questions = dataStore.questions
+      .filter((q) => !deletes.has(q.id))
+      .map((q) => (overrides[q.id] ? { ...q, ...overrides[q.id] } : q));
+  }
+
+  function isSeededQuestion(question) {
+    const source = String(question.source_ref || "").toLowerCase();
+    const tags = Array.isArray(question.tags)
+      ? question.tags.map((t) => String(t).toLowerCase())
+      : [];
+    const seededHints = ["seed", "official", "library", "ap2"];
+    return seededHints.some((hint) => source.includes(hint)) || tags.includes("seeded");
+  }
+
+  function getTopicName(topicId) {
+    const topic = dataStore.topics.find((t) => t.id === topicId);
+    return topic ? topic.name : topicId || "unknown";
+  }
+
+  function getDifficultyValue(question) {
+    const value = String(question.difficulty || "").toLowerCase();
+    if (value === "hard") return 3;
+    if (value === "medium") return 2;
+    if (value === "easy") return 1;
+    return 0;
+  }
+
+  function getQuestionTimestamp(question) {
+    const ts =
+      question.created_at ||
+      question.createdAt ||
+      question.imported_at ||
+      question.importedAt ||
+      question.added_at ||
+      question.addedAt;
+    if (ts) {
+      const parsed = new Date(ts).getTime();
+      if (!Number.isNaN(parsed)) return parsed;
+    }
+    const order = questionOrder.get(question.id);
+    return typeof order === "number" ? order : 0;
+  }
+
+  function truncateText(text, max) {
+    const safe = String(text || "");
+    if (safe.length <= max) return safe;
+    return `${safe.slice(0, max - 1)}…`;
+  }
+
+  function renderManagerControls() {
+    if (!ui.managerTopic) return;
+    ui.managerSearch.value = state.managerSearch;
+    const topicOptions = [
+      `<option value="all">All topics</option>`,
+      ...dataStore.topics.map(
+        (t) => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`
+      )
+    ];
+    ui.managerTopic.innerHTML = topicOptions.join("");
+    ui.managerTopic.value = state.managerTopic;
+
+    const allTypes = getManagerTypeList();
+    ui.managerType.innerHTML = [
+      `<option value="all">All types</option>`,
+      ...allTypes.map((t) => `<option value="${t}">${t}</option>`)
+    ].join("");
+    ui.managerType.value = state.managerType;
+
+    ui.managerSort.innerHTML = [
+      `<option value="newest">Newest</option>`,
+      `<option value="oldest">Oldest</option>`,
+      `<option value="difficulty">Difficulty</option>`,
+      `<option value="topic">Topic</option>`
+    ].join("");
+    ui.managerSort.value = state.managerSort;
+    ui.managerShowSeeded.checked = state.managerShowSeeded;
+    ui.managerShowCustom.checked = state.managerShowCustom;
+    ui.managerAllowSeededEdit.checked = state.managerAllowSeededEdit;
+  }
+
+  function getManagerTypeList() {
+    return [
+      "single",
+      "multi",
+      "truefalse",
+      "fillblank",
+      "matching",
+      "ordering",
+      "guess",
+      "explain",
+      "exam"
+    ];
+  }
+
+  function getManagerFilteredQuestions() {
+    let list = [...dataStore.questions];
+    list = list.filter((q) => {
+      const seeded = isSeededQuestion(q);
+      if (seeded && !state.managerShowSeeded) return false;
+      if (!seeded && !state.managerShowCustom) return false;
+      return true;
+    });
+    if (state.managerTopic !== "all") {
+      list = list.filter((q) => q.topicId === state.managerTopic);
+    }
+    if (state.managerType !== "all") {
+      list = list.filter((q) => q.type === state.managerType);
+    }
+    const query = state.managerSearch.trim().toLowerCase();
+    if (query) {
+      list = list.filter((q) => {
+        const tags = Array.isArray(q.tags) ? q.tags.join(" ") : "";
+        return (
+          String(q.id).toLowerCase().includes(query) ||
+          String(q.prompt || "").toLowerCase().includes(query) ||
+          String(tags).toLowerCase().includes(query)
+        );
+      });
+    }
+    if (state.managerSort === "difficulty") {
+      list.sort((a, b) => getDifficultyValue(b) - getDifficultyValue(a));
+    } else if (state.managerSort === "topic") {
+      list.sort((a, b) => getTopicName(a.topicId).localeCompare(getTopicName(b.topicId)));
+    } else if (state.managerSort === "oldest") {
+      list.sort((a, b) => getQuestionTimestamp(a) - getQuestionTimestamp(b));
+    } else {
+      list.sort((a, b) => getQuestionTimestamp(b) - getQuestionTimestamp(a));
+    }
+    return list;
+  }
+
+  function renderManager() {
+    if (!ui.managerTbody) return;
+    const all = getManagerFilteredQuestions();
+    const pageSize = 25;
+    const visible = all.slice(0, pageSize * state.managerPage);
+    ui.managerTbody.innerHTML = "";
+    if (visible.length === 0) {
+      const row = document.createElement("tr");
+      row.innerHTML = `<td colspan="8" class="muted">No questions match your filters.</td>`;
+      ui.managerTbody.appendChild(row);
+    }
+    visible.forEach((q) => {
+      const seeded = isSeededQuestion(q);
+      const canEdit = !seeded || state.managerAllowSeededEdit;
+      const row = document.createElement("tr");
+      const tags = Array.isArray(q.tags) ? q.tags.join(", ") : "";
+      const source = truncateText(q.source_ref || "", 24);
+      const prompt = truncateText(q.prompt || "", 80);
+      const difficulty = q.difficulty ? String(q.difficulty) : "n/a";
+      row.innerHTML = `
+        <td>${escapeHtml(q.id)}</td>
+        <td>${escapeHtml(getTopicName(q.topicId))}</td>
+        <td>${escapeHtml(q.type)}</td>
+        <td>${escapeHtml(difficulty)}</td>
+        <td>${escapeHtml(prompt)}</td>
+        <td>${escapeHtml(tags)}</td>
+        <td>${escapeHtml(source)}</td>
+        <td>
+          <div class="manager-actions">
+            ${
+              canEdit
+                ? `<button class="ghost" data-action="edit" data-id="${escapeHtml(q.id)}">Edit</button>
+                   <button class="ghost" data-action="delete" data-id="${escapeHtml(q.id)}">Delete</button>`
+                : `<span class="manager-lock">Locked</span>`
+            }
+          </div>
+        </td>
+      `;
+      ui.managerTbody.appendChild(row);
+    });
+
+    const total = all.length;
+    const showing = visible.length;
+    ui.managerCount.textContent = `Showing ${showing} of ${total}`;
+    ui.managerLoadMore.disabled = showing >= total;
+    ui.managerLoadMore.style.opacity = showing >= total ? "0.5" : "1";
+    ui.managerMeta.textContent = `Total questions: ${dataStore.questions.length}`;
+    renderCoveragePanel();
+    logger.debug("manager", "list render", { total, showing });
+  }
+
+  function renderCoveragePanel() {
+    if (!ui.managerCoverage) return;
+    const list = dataStore.questions.filter((q) => {
+      const seeded = isSeededQuestion(q);
+      if (seeded && !state.managerShowSeeded) return false;
+      if (!seeded && !state.managerShowCustom) return false;
+      return true;
+    });
+    const topics = dataStore.topics;
+    const types = getManagerTypeList();
+    const byTopic = {};
+    const byType = {};
+    const matrix = {};
+    topics.forEach((t) => {
+      byTopic[t.id] = 0;
+      matrix[t.id] = {};
+      types.forEach((type) => {
+        matrix[t.id][type] = 0;
+      });
+    });
+    list.forEach((q) => {
+      byTopic[q.topicId] = (byTopic[q.topicId] || 0) + 1;
+      byType[q.type] = (byType[q.type] || 0) + 1;
+      if (!matrix[q.topicId]) {
+        matrix[q.topicId] = {};
+      }
+      matrix[q.topicId][q.type] = (matrix[q.topicId][q.type] || 0) + 1;
+    });
+
+    const topicLines = topics.map(
+      (t) => `${t.name}: ${byTopic[t.id] || 0}`
+    );
+    const typeLines = types.map((t) => `${t}: ${byType[t] || 0}`);
+
+    const gaps = [];
+    topics.forEach((t) => {
+      types.forEach((type) => {
+        if ((matrix[t.id] && matrix[t.id][type]) || 0) return;
+        gaps.push(`${t.name} -> ${type}`);
+      });
+    });
+
+    const headerCells = types.map((t) => `<th>${t}</th>`).join("");
+    const bodyRows = topics
+      .map((t) => {
+        const cells = types
+          .map((type) => {
+            const count = matrix[t.id] ? matrix[t.id][type] || 0 : 0;
+            const klass = count === 0 ? "missing" : "";
+            return `<td class="${klass}">${count}</td>`;
+          })
+          .join("");
+        return `<tr><th>${escapeHtml(t.name)}</th>${cells}</tr>`;
+      })
+      .join("");
+
+    ui.managerCoverage.innerHTML = `
+      <div class="manager-coverage-grid">
+        <div>
+          <div class="stat-label">By topic</div>
+          <div class="muted">${escapeHtml(topicLines.join(" | "))}</div>
+        </div>
+        <div>
+          <div class="stat-label">By type</div>
+          <div class="muted">${escapeHtml(typeLines.join(" | "))}</div>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="manager-matrix">
+          <thead>
+            <tr>
+              <th>Topic</th>
+              ${headerCells}
+            </tr>
+          </thead>
+          <tbody>
+            ${bodyRows}
+          </tbody>
+        </table>
+      </div>
+      <div class="muted">Gaps: ${escapeHtml(gaps.slice(0, 8).join(" | ") || "None")}</div>
+    `;
+  }
+
+  function openManagerEdit(id) {
+    const question = dataStore.questions.find((q) => q.id === id);
+    if (!question) {
+      showError("Question not found.", `Missing id ${id}`);
+      return;
+    }
+    if (isSeededQuestion(question) && !state.managerAllowSeededEdit) {
+      showError("Seeded questions are read-only by default.");
+      return;
+    }
+    managerEditId = id;
+    ui.managerEditId.value = question.id;
+    ui.managerEditType.value = question.type;
+    ui.managerEditPrompt.value = question.prompt || "";
+    ui.managerEditExplanation.value = question.explanation || "";
+    ui.managerEditSource.value = question.source_ref || "";
+    ui.managerEditTags.value = Array.isArray(question.tags) ? question.tags.join(", ") : "";
+    ui.managerEditDifficulty.value = question.difficulty || "";
+
+    const topicOptions = dataStore.topics.map(
+      (t) => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`
+    );
+    ui.managerEditTopic.innerHTML = topicOptions.join("");
+    ui.managerEditTopic.value = question.topicId;
+
+    renderManagerEditDynamic(question);
+    ui.managerEditStatus.textContent = "";
+    ui.managerEdit.classList.remove("hidden");
+    logger.debug("manager", "edit open", { id });
+  }
+
+  function renderManagerEditDynamic(question) {
+    const type = question.type;
+    if (type === "multi") {
+      ui.managerEditDynamic.innerHTML = `
+        <label>
+          Options (one per line)
+          <textarea id="manager-edit-options" rows="4"></textarea>
+        </label>
+        <label>
+          Correct indices (comma, 0-based)
+          <input id="manager-edit-correct" type="text" />
+        </label>
+      `;
+      const optionsEl = document.getElementById("manager-edit-options");
+      const correctEl = document.getElementById("manager-edit-correct");
+      if (optionsEl) {
+        optionsEl.value = Array.isArray(question.options)
+          ? question.options.join("\n")
+          : "";
+      }
+      if (correctEl) {
+        correctEl.value = Array.isArray(question.correctIndexes)
+          ? question.correctIndexes.join(", ")
+          : "";
+      }
+      ui.managerEditSave.disabled = false;
+    } else if (type === "truefalse") {
+      const value = question.correctBoolean ? "true" : "false";
+      ui.managerEditDynamic.innerHTML = `
+        <label>
+          Correct answer
+          <select id="manager-edit-boolean">
+            <option value="true">True</option>
+            <option value="false">False</option>
+          </select>
+        </label>
+      `;
+      const select = ui.managerEditDynamic.querySelector("#manager-edit-boolean");
+      if (select) select.value = value;
+      ui.managerEditSave.disabled = false;
+    } else {
+      ui.managerEditDynamic.innerHTML = `
+        <div class="warning">Editing for this type is not implemented yet.</div>
+      `;
+      ui.managerEditSave.disabled = true;
+    }
+  }
+
+  function closeManagerEdit() {
+    managerEditId = null;
+    if (ui.managerEdit) ui.managerEdit.classList.add("hidden");
+  }
+
+  function saveManagerEdit() {
+    if (!managerEditId) return;
+    const question = dataStore.questions.find((q) => q.id === managerEditId);
+    if (!question) {
+      showError("Question not found.", `Missing id ${managerEditId}`);
+      return;
+    }
+    const updated = { ...question };
+    const prompt = ui.managerEditPrompt.value.trim();
+    if (!prompt) {
+      ui.managerEditStatus.textContent = "Prompt is required.";
+      return;
+    }
+    updated.prompt = prompt;
+    updated.topicId = ui.managerEditTopic.value;
+    updated.explanation = ui.managerEditExplanation.value.trim();
+    updated.source_ref = ui.managerEditSource.value.trim();
+    updated.tags = ui.managerEditTags.value
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+    updated.difficulty = ui.managerEditDifficulty.value || "";
+
+    if (updated.type === "multi") {
+      const options = getLines("manager-edit-options");
+      const correct = getCommaNumbers("manager-edit-correct");
+      if (options.length < 2) {
+        ui.managerEditStatus.textContent = "At least 2 options are required.";
+        return;
+      }
+      if (correct.length === 0) {
+        ui.managerEditStatus.textContent = "At least one correct index is required.";
+        return;
+      }
+      if (correct.some((idx) => Number.isNaN(idx))) {
+        ui.managerEditStatus.textContent = "Correct indices must be numbers.";
+        return;
+      }
+      const maxIndex = options.length - 1;
+      if (correct.some((idx) => idx < 0 || idx > maxIndex)) {
+        ui.managerEditStatus.textContent = "Correct indices must be within range.";
+        return;
+      }
+      updated.options = options;
+      updated.correctIndexes = correct;
+    } else if (updated.type === "truefalse") {
+      const select = document.getElementById("manager-edit-boolean");
+      if (!select) {
+        ui.managerEditStatus.textContent = "Missing true/false selector.";
+        return;
+      }
+      updated.correctBoolean = select.value === "true";
+    } else {
+      ui.managerEditStatus.textContent = "Editing for this type is not implemented yet.";
+      return;
+    }
+
+    const overrides = loadLocalQuestionOverrides();
+    overrides[updated.id] = updated;
+    saveLocalQuestionOverrides(overrides);
+    applyLocalQuestionMutations();
+    renderManagerControls();
+    renderManager();
+    renderDashboard();
+    ui.managerEditStatus.textContent = "Saved.";
+    logger.debug("manager", "edit saved", { id: updated.id });
+  }
+
+  function confirmDeleteQuestion(id) {
+    const question = dataStore.questions.find((q) => q.id === id);
+    if (!question) {
+      showError("Question not found.", `Missing id ${id}`);
+      return;
+    }
+    if (isSeededQuestion(question) && !state.managerAllowSeededEdit) {
+      showError("Seeded questions are read-only by default.");
+      return;
+    }
+    logger.debug("manager", "delete confirm", { id });
+    const ok = window.confirm("Are you sure?");
+    if (!ok) return;
+    const deletes = loadLocalQuestionDeletes();
+    deletes.add(id);
+    saveLocalQuestionDeletes(deletes);
+    applyLocalQuestionMutations();
+    if (managerEditId === id) {
+      closeManagerEdit();
+    }
+    renderManagerControls();
+    renderManager();
+    renderDashboard();
+    logger.debug("manager", "question deleted", { id });
+  }
+
   function buildAiFormatSpecText() {
     return [
       "AP2 Question Pack Format Guide",
@@ -2561,6 +3176,10 @@
     try {
       const data = await apiFetch("/questions");
       dataStore = { topics: data.topics || [], questions: data.questions || [] };
+      questionOrder = new Map(
+        dataStore.questions.map((q, idx) => [q.id, idx])
+      );
+      applyLocalQuestionMutations();
       const attemptsRes = await apiFetch("/attempts");
       attempts = attemptsRes.attempts || [];
       const appointmentsRes = await apiFetch("/appointments");
@@ -2570,6 +3189,8 @@
       renderQuiz();
       renderCalendar();
       renderBuilderControls();
+      renderManagerControls();
+      renderManager();
       updateDebugPanel();
     } catch (error) {
       showError("Failed to load data from server.", String(error));

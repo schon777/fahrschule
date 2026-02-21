@@ -14,6 +14,7 @@
         <button class="nav-btn" data-route="quiz">Quiz</button>
         <button class="nav-btn" data-route="calendar">Calendar</button>
         <button class="nav-btn" data-route="builder">Builder</button>
+        <button class="nav-btn" data-route="manage">Manage</button>
       </nav>
       <div class="top-actions">
         <button id="toggle-debug" class="ghost">Debug</button>
@@ -233,6 +234,118 @@
           </div>
           <div class="builder-export">
             <button id="export-questions" class="ghost" type="button">Export Questions</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="page-manage" class="page hidden">
+        <div class="card">
+          <div class="manager-header">
+            <h2>Question Manager</h2>
+            <div id="manager-meta" class="muted"></div>
+          </div>
+          <div id="manager-coverage" class="manager-coverage"></div>
+          <div class="manager-controls">
+            <label>
+              Search
+              <input id="manager-search" type="text" placeholder="Search prompt, tags, or id..." />
+            </label>
+            <label>
+              Topic
+              <select id="manager-topic"></select>
+            </label>
+            <label>
+              Type
+              <select id="manager-type"></select>
+            </label>
+            <label>
+              Sort
+              <select id="manager-sort"></select>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" id="manager-show-seeded" checked />
+              <span>Show seeded</span>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" id="manager-show-custom" checked />
+              <span>Show custom</span>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" id="manager-allow-seeded-edit" />
+              <span>Allow edit seeded</span>
+            </label>
+          </div>
+          <div class="table-wrap">
+            <table class="manager-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Topic</th>
+                  <th>Type</th>
+                  <th>Difficulty</th>
+                  <th>Prompt</th>
+                  <th>Tags</th>
+                  <th>Source</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="manager-tbody"></tbody>
+            </table>
+          </div>
+          <div class="manager-pagination">
+            <button id="manager-load-more" class="ghost" type="button">Load more</button>
+            <div id="manager-count" class="muted"></div>
+          </div>
+          <div id="manager-edit" class="manager-edit hidden">
+            <div class="manager-edit-header">
+              <h3>Edit Question</h3>
+              <button id="manager-edit-close" class="ghost" type="button">Close</button>
+            </div>
+            <form id="manager-edit-form" class="builder-form">
+              <label>
+                Question ID
+                <input id="manager-edit-id" type="text" disabled />
+              </label>
+              <label>
+                Topic
+                <select id="manager-edit-topic"></select>
+              </label>
+              <label>
+                Type
+                <input id="manager-edit-type" type="text" disabled />
+              </label>
+              <label>
+                Prompt
+                <textarea id="manager-edit-prompt" rows="3"></textarea>
+              </label>
+              <label>
+                Explanation
+                <textarea id="manager-edit-explanation" rows="2"></textarea>
+              </label>
+              <label>
+                Source Ref
+                <input id="manager-edit-source" type="text" />
+              </label>
+              <label>
+                Tags (comma)
+                <input id="manager-edit-tags" type="text" />
+              </label>
+              <label>
+                Difficulty
+                <select id="manager-edit-difficulty">
+                  <option value="">Unknown</option>
+                  <option value="easy">Easy</option>
+                  <option value="medium">Medium</option>
+                  <option value="hard">Hard</option>
+                </select>
+              </label>
+              <div id="manager-edit-dynamic"></div>
+              <div class="manager-edit-actions">
+                <button id="manager-edit-save" class="primary" type="submit">Save</button>
+                <button id="manager-edit-cancel" class="ghost" type="button">Cancel</button>
+              </div>
+              <div id="manager-edit-status" class="muted"></div>
+            </form>
           </div>
         </div>
       </section>
