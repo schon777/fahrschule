@@ -380,6 +380,12 @@ body {
   flex-wrap: wrap;
 }
 
+.builder-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .builder-preview {
   margin-top: 10px;
   font-size: 13px;

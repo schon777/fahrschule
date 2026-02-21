@@ -86,6 +86,8 @@
     importApply: document.getElementById("import-apply"),
     importCancel: document.getElementById("import-cancel"),
     importPreview: document.getElementById("import-preview"),
+    aiGuideSpec: document.getElementById("ai-guide-spec"),
+    aiGuidePrompt: document.getElementById("ai-guide-prompt"),
     builderForm: document.getElementById("builder-form"),
     builderTopic: document.getElementById("builder-topic"),
     builderTopicNew: document.getElementById("builder-topic-new"),
@@ -262,6 +264,36 @@
     ui.exportQuestions.addEventListener("click", () => {
       exportCustomQuestions();
     });
+    if (ui.aiGuideSpec) {
+      ui.aiGuideSpec.addEventListener("click", () => {
+        try {
+          const content = buildAiFormatSpecText();
+          logger.debug("builder", "ai guide generated", {
+            kind: "spec",
+            bytes: content.length
+          });
+          downloadTextFile("ap2-questionpack-v1-spec.txt", content, "spec");
+        } catch (error) {
+          showError("Failed to generate AI format guide.", String(error));
+          logger.error("builder", "ai guide generate failed", { error: String(error) });
+        }
+      });
+    }
+    if (ui.aiGuidePrompt) {
+      ui.aiGuidePrompt.addEventListener("click", () => {
+        try {
+          const content = buildAiPromptTemplateText();
+          logger.debug("builder", "ai prompt generated", {
+            kind: "prompt",
+            bytes: content.length
+          });
+          downloadTextFile("ap2-questionpack-v1-prompt-template.txt", content, "prompt");
+        } catch (error) {
+          showError("Failed to generate AI prompt template.", String(error));
+          logger.error("builder", "ai prompt generate failed", { error: String(error) });
+        }
+      });
+    }
   }
 
   function bindLogin() {
@@ -1645,6 +1677,289 @@
       result.errors.slice(0, 5).forEach((err) => lines.push(`- ${err}`));
     }
     return lines.join("\n");
+  }
+
+  function buildAiFormatSpecText() {
+    return [
+      "AP2 Question Pack Format Guide",
+      "Schema: ap2-questionpack-v1",
+      "",
+      "Top-level JSON structure:",
+      "{",
+      "  \"schema\": \"ap2-questionpack-v1\",",
+      "  \"meta\": {",
+      "    \"source\": \"chatgpt\",",
+      "    \"created_at\": \"YYYY-MM-DD\"",
+      "  },",
+      "  \"topics\": [",
+      "    { \"slug\": \"topic-slug\", \"title\": \"Topic Title\", \"topic_area\": \"Area\" }",
+      "  ],",
+      "  \"questions\": [",
+      "    { ... }",
+      "  ]",
+      "}",
+      "",
+      "General rules:",
+      "- Return ONLY valid JSON. No markdown fences. No commentary.",
+      "- Use ASCII only if required by project rules.",
+      "- \"schema\" must be exactly ap2-questionpack-v1.",
+      "- \"topics\" is optional but recommended. Use unique topic slugs.",
+      "- Each question must have unique \"id\" and a \"topic_slug\".",
+      "- \"topic_slug\" should match a slug in \"topics\" or create a new topic.",
+      "- Required fields for all questions: id, type, topic_slug, prompt.",
+      "- Optional fields: explanation, source_ref, tags.",
+      "- Do not invent external URLs. Use source_ref as plain text.",
+      "",
+      "Supported types and required fields:",
+      "- single: options (array), correct (array with 1 index)",
+      "- multi: options (array), correct (array of indices)",
+      "- truefalse: correct (boolean)",
+      "- fillblank: answers (array of accepted answers)",
+      "- matching: left (array), right (array), optional pairs (array of [leftIndex, rightIndex])",
+      "- ordering: items (array), correct_order (array of indices, 0-based)",
+      "- guessword: answers (array). Alias of type guess.",
+      "- explainterm: keywords (array). Alias of type explain.",
+      "- exam: answer_key (string). Self-grade by default.",
+      "",
+      "Example: single",
+      "{",
+      "  \"schema\": \"ap2-questionpack-v1\",",
+      "  \"meta\": { \"source\": \"example\" },",
+      "  \"topics\": [ { \"slug\": \"network-basics\", \"title\": \"Network Basics\" } ],",
+      "  \"questions\": [",
+      "    {",
+      "      \"id\": \"q_single_01\",",
+      "      \"type\": \"single\",",
+      "      \"topic_slug\": \"network-basics\",",
+      "      \"prompt\": \"What does LAN stand for?\",",
+      "      \"options\": [\"Local Area Network\", \"Long Area Node\", \"Low Access Node\"],",
+      "      \"correct\": [0],",
+      "      \"explanation\": \"LAN means Local Area Network.\",",
+      "      \"source_ref\": \"internal:manual\",",
+      "      \"tags\": [\"network\"]",
+      "    }",
+      "  ]",
+      "}",
+      "",
+      "Example: multi",
+      "{",
+      "  \"schema\": \"ap2-questionpack-v1\",",
+      "  \"meta\": { \"source\": \"example\" },",
+      "  \"topics\": [ { \"slug\": \"safety\", \"title\": \"Safety\" } ],",
+      "  \"questions\": [",
+      "    {",
+      "      \"id\": \"q_multi_01\",",
+      "      \"type\": \"multi\",",
+      "      \"topic_slug\": \"safety\",",
+      "      \"prompt\": \"Select all safety checks.\",",
+      "      \"options\": [\"Brake test\", \"Mirror check\", \"Open all windows\", \"Seat belt\"],",
+      "      \"correct\": [0, 1, 3],",
+      "      \"explanation\": \"Brake, mirrors, and seat belt are required.\",",
+      "      \"source_ref\": \"internal:training\"",
+      "    }",
+      "  ]",
+      "}",
+      "",
+      "Example: truefalse",
+      "{",
+      "  \"schema\": \"ap2-questionpack-v1\",",
+      "  \"meta\": { \"source\": \"example\" },",
+      "  \"topics\": [ { \"slug\": \"rules\", \"title\": \"Rules\" } ],",
+      "  \"questions\": [",
+      "    {",
+      "      \"id\": \"q_tf_01\",",
+      "      \"type\": \"truefalse\",",
+      "      \"topic_slug\": \"rules\",",
+      "      \"prompt\": \"You must stop at a red light.\",",
+      "      \"correct\": true,",
+      "      \"explanation\": \"Red means stop.\",",
+      "      \"source_ref\": \"internal:rules\"",
+      "    }",
+      "  ]",
+      "}",
+      "",
+      "Example: fillblank",
+      "{",
+      "  \"schema\": \"ap2-questionpack-v1\",",
+      "  \"meta\": { \"source\": \"example\" },",
+      "  \"topics\": [ { \"slug\": \"signals\", \"title\": \"Signals\" } ],",
+      "  \"questions\": [",
+      "    {",
+      "      \"id\": \"q_fill_01\",",
+      "      \"type\": \"fillblank\",",
+      "      \"topic_slug\": \"signals\",",
+      "      \"prompt\": \"A red traffic light means ___ .\",",
+      "      \"answers\": [\"stop\", \"halt\"],",
+      "      \"explanation\": \"Red means stop.\",",
+      "      \"source_ref\": \"internal:signals\"",
+      "    }",
+      "  ]",
+      "}",
+      "",
+      "Example: matching",
+      "{",
+      "  \"schema\": \"ap2-questionpack-v1\",",
+      "  \"meta\": { \"source\": \"example\" },",
+      "  \"topics\": [ { \"slug\": \"signs\", \"title\": \"Signs\" } ],",
+      "  \"questions\": [",
+      "    {",
+      "      \"id\": \"q_match_01\",",
+      "      \"type\": \"matching\",",
+      "      \"topic_slug\": \"signs\",",
+      "      \"prompt\": \"Match the sign to its meaning.\",",
+      "      \"left\": [\"Stop\", \"Yield\"],",
+      "      \"right\": [\"Give way\", \"Come to a full stop\"],",
+      "      \"pairs\": [[0, 1], [1, 0]],",
+      "      \"explanation\": \"Stop means full stop, yield means give way.\",",
+      "      \"source_ref\": \"internal:signs\"",
+      "    }",
+      "  ]",
+      "}",
+      "",
+      "Example: ordering",
+      "{",
+      "  \"schema\": \"ap2-questionpack-v1\",",
+      "  \"meta\": { \"source\": \"example\" },",
+      "  \"topics\": [ { \"slug\": \"procedure\", \"title\": \"Procedure\" } ],",
+      "  \"questions\": [",
+      "    {",
+      "      \"id\": \"q_order_01\",",
+      "      \"type\": \"ordering\",",
+      "      \"topic_slug\": \"procedure\",",
+      "      \"prompt\": \"Order the steps to start the engine.\",",
+      "      \"items\": [\"Insert key\", \"Press clutch\", \"Start engine\"],",
+      "      \"correct_order\": [0, 1, 2],",
+      "      \"explanation\": \"Insert key, press clutch, then start.\",",
+      "      \"source_ref\": \"internal:procedure\"",
+      "    }",
+      "  ]",
+      "}",
+      "",
+      "Example: guessword",
+      "{",
+      "  \"schema\": \"ap2-questionpack-v1\",",
+      "  \"meta\": { \"source\": \"example\" },",
+      "  \"topics\": [ { \"slug\": \"definitions\", \"title\": \"Definitions\" } ],",
+      "  \"questions\": [",
+      "    {",
+      "      \"id\": \"q_guess_01\",",
+      "      \"type\": \"guessword\",",
+      "      \"topic_slug\": \"definitions\",",
+      "      \"prompt\": \"Term for a vehicle that is not moving.\",",
+      "      \"answers\": [\"stationary\", \"stopped\"],",
+      "      \"explanation\": \"Stationary or stopped.\",",
+      "      \"source_ref\": \"internal:definitions\"",
+      "    }",
+      "  ]",
+      "}",
+      "",
+      "Example: explainterm",
+      "{",
+      "  \"schema\": \"ap2-questionpack-v1\",",
+      "  \"meta\": { \"source\": \"example\" },",
+      "  \"topics\": [ { \"slug\": \"terms\", \"title\": \"Terms\" } ],",
+      "  \"questions\": [",
+      "    {",
+      "      \"id\": \"q_explain_01\",",
+      "      \"type\": \"explainterm\",",
+      "      \"topic_slug\": \"terms\",",
+      "      \"prompt\": \"Explain right of way.\",",
+      "      \"keywords\": [\"priority\", \"yield\", \"who goes first\"],",
+      "      \"explanation\": \"Right of way defines priority.\",",
+      "      \"source_ref\": \"internal:terms\"",
+      "      }",
+      "  ]",
+      "}",
+      "",
+      "Example: exam",
+      "{",
+      "  \"schema\": \"ap2-questionpack-v1\",",
+      "  \"meta\": { \"source\": \"example\" },",
+      "  \"topics\": [ { \"slug\": \"exam\", \"title\": \"Exam\" } ],",
+      "  \"questions\": [",
+      "    {",
+      "      \"id\": \"q_exam_01\",",
+      "      \"type\": \"exam\",",
+      "      \"topic_slug\": \"exam\",",
+      "      \"prompt\": \"Describe how to react to an emergency stop.\",",
+      "      \"answer_key\": \"Brake firmly, maintain control, use hazard lights.\",",
+      "      \"explanation\": \"Key steps are braking and control.\",",
+      "      \"source_ref\": \"internal:exam\"",
+      "    }",
+      "  ]",
+      "}",
+      ""
+    ].join("\n");
+  }
+
+  function buildAiPromptTemplateText() {
+    return [
+      "CHATGPT PROMPT TEMPLATE",
+      "",
+      "You are generating a JSON question pack for this app.",
+      "Return ONLY valid JSON. No markdown fences. No commentary.",
+      "Use ASCII only if required by project rules.",
+      "Schema must be: ap2-questionpack-v1",
+      "",
+      "SUPPORTED TYPES:",
+      "single, multi, truefalse, fillblank, matching, ordering, guessword, explainterm, exam",
+      "",
+      "TOP-LEVEL FORMAT:",
+      "{",
+      "  \"schema\": \"ap2-questionpack-v1\",",
+      "  \"meta\": { \"source\": \"chatgpt\", \"created_at\": \"YYYY-MM-DD\" },",
+      "  \"topics\": [ { \"slug\": \"topic-slug\", \"title\": \"Topic Title\", \"topic_area\": \"Area\" } ],",
+      "  \"questions\": [ { ... } ]",
+      "}",
+      "",
+      "FIELD RULES (summary):",
+      "- Every question: id, type, topic_slug, prompt.",
+      "- single/multi: options array, correct array of indices.",
+      "- truefalse: correct true or false.",
+      "- fillblank: answers array.",
+      "- matching: left array, right array, optional pairs array of [leftIndex, rightIndex].",
+      "- ordering: items array, correct_order array of indices (0-based).",
+      "- guessword: answers array.",
+      "- explainterm: keywords array.",
+      "- exam: answer_key string.",
+      "- Do not invent external URLs. Use source_ref as plain text.",
+      "",
+      "CONSTRAINTS (fill in before sending to ChatGPT):",
+      "Number of questions: [ENTER TOTAL COUNT]",
+      "Difficulty distribution: [EASY %, MEDIUM %, HARD %]",
+      "Tags to use: [TAG1, TAG2, ...]",
+      "Topic list and source info:",
+      "[PASTE TOPIC INFORMATION HERE]",
+      "",
+      "OUTPUT RULES:",
+      "- Return only JSON.",
+      "- Use unique ids for each question.",
+      "- Use topic_slug that matches topics[].slug.",
+      "",
+      "Now generate the JSON question pack."
+    ].join("\n");
+  }
+
+  function downloadTextFile(filename, content, kind) {
+    try {
+      const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      logger.debug("builder", "ai guide downloaded", {
+        kind,
+        filename,
+        bytes: blob.size
+      });
+    } catch (error) {
+      showError("Download failed.", String(error));
+      logger.error("builder", "ai guide download failed", { error: String(error) });
+    }
   }
 
   async function saveBuiltQuestion() {
