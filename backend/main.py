@@ -9,6 +9,8 @@ import ipaddress
 import math
 import re
 import time
+import random
+import zipfile
 import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
@@ -38,6 +40,8 @@ def load_config():
 
 
 CONFIG = load_config()
+
+OFFLINE_MODE = bool(CONFIG.get("offline_mode", False))
 
 OLLAMA_BASE = CONFIG.get("ollama_base", "http://127.0.0.1:11434")
 AI_MODELS = {
@@ -116,6 +120,356 @@ def ensure_topic_paths(conn):
     conn.commit()
 
 
+def build_topic_map(topics_input, errors):
+    topic_map = {}
+    for t in topics_input:
+        slug = t.get("slug") or t.get("id") or t.get("topic_id")
+        if slug:
+            parent_id = t.get("parent_topic_id") or t.get("parent_id")
+            topic_map[slug] = {
+                "id": slug,
+                "name": t.get("title") or t.get("name") or slug_to_title(slug),
+                "topic_area": t.get("topic_area", ""),
+                "parent_id": parent_id,
+                "path": t.get("path"),
+                "depth": t.get("depth"),
+            }
+        else:
+            errors.append("Topic missing slug/id.")
+
+    # Build paths/depths for topic tree.
+    visiting = set()
+    visited = set()
+
+    def compute_tree(slug):
+        if slug in visited:
+            return
+        if slug in visiting:
+            errors.append(f"Topic cycle detected at {slug}.")
+            return
+        visiting.add(slug)
+        node = topic_map.get(slug, {})
+        parent_id = node.get("parent_id")
+        if parent_id and parent_id not in topic_map:
+            topic_map[parent_id] = {
+                "id": parent_id,
+                "name": slug_to_title(parent_id),
+                "topic_area": "",
+                "parent_id": None,
+                "path": parent_id,
+                "depth": 0,
+            }
+        if parent_id:
+            compute_tree(parent_id)
+            parent = topic_map[parent_id]
+            if not node.get("path"):
+                node["path"] = f"{parent['path']}/{slug}"
+            if node.get("depth") is None:
+                node["depth"] = (parent.get("depth") or 0) + 1
+        else:
+            node["path"] = node.get("path") or slug
+            node["depth"] = node.get("depth") if node.get("depth") is not None else 0
+        topic_map[slug] = node
+        visiting.remove(slug)
+        visited.add(slug)
+
+    for slug in list(topic_map.keys()):
+        compute_tree(slug)
+
+    return topic_map
+
+
+def get_pack_id(pack):
+    meta = pack.get("meta", {}) if isinstance(pack, dict) else {}
+    pack_id = meta.get("pack_id") or meta.get("id")
+    if pack_id:
+        return str(pack_id)
+    seed = f"{meta.get('title','')}-{meta.get('created_at','')}"
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
+    return f"pack_{digest}"
+
+
+def upsert_pack(conn, pack_id, pack):
+    meta = pack.get("meta", {}) if isinstance(pack, dict) else {}
+    settings = pack.get("settings", {}) if isinstance(pack, dict) else {}
+    methods = pack.get("methods", []) if isinstance(pack, dict) else []
+    assets = pack.get("assets", []) if isinstance(pack, dict) else []
+    schema = pack.get("schema", "")
+    created_at = meta.get("created_at") or datetime.now(timezone.utc).isoformat()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM packs WHERE id = ?", (pack_id,))
+    exists = cur.fetchone() is not None
+    payload = (
+        pack_id,
+        schema,
+        json.dumps(meta),
+        json.dumps(settings),
+        json.dumps(methods),
+        json.dumps(assets),
+        created_at,
+    )
+    if exists:
+        cur.execute(
+            """
+            UPDATE packs
+            SET schema = ?, meta = ?, settings = ?, methods = ?, assets = ?, created_at = ?
+            WHERE id = ?
+            """,
+            (schema, json.dumps(meta), json.dumps(settings), json.dumps(methods), json.dumps(assets), created_at, pack_id),
+        )
+    else:
+        cur.execute(
+            """
+            INSERT INTO packs (id, schema, meta, settings, methods, assets, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            payload,
+        )
+
+
+def safe_list(value):
+    return value if isinstance(value, list) else []
+
+
+def normalize_quiztab_question(input_q, topic_map, errors, pack_id):
+    if not input_q or "id" not in input_q or "method_id" not in input_q:
+        errors.append("Quiztab question missing id or method_id.")
+        return None
+    method_id_raw = input_q.get("method_id")
+    type_map = {"guessword": "guess", "explainterm": "explain"}
+    method_id = type_map.get(method_id_raw, method_id_raw)
+    topic_slug = input_q.get("topic_slug")
+    if not topic_slug:
+        errors.append(f"Question {input_q['id']} missing topic_slug.")
+        return None
+    if topic_slug not in topic_map:
+        topic_map[topic_slug] = {
+            "id": topic_slug,
+            "name": slug_to_title(topic_slug),
+            "topic_area": "",
+        }
+    prompt = input_q.get("prompt")
+    if not prompt:
+        errors.append(f"Question {input_q['id']} missing prompt.")
+        return None
+
+    payload = input_q.get("payload") if isinstance(input_q.get("payload"), dict) else {}
+    support = input_q.get("support") if isinstance(input_q.get("support"), dict) else {}
+    solution = input_q.get("solution") if isinstance(input_q.get("solution"), dict) else {}
+
+    base = {
+        "id": input_q["id"],
+        "topicId": topic_slug,
+        "type": method_id,
+        "method_id": method_id,
+        "prompt": prompt,
+        "payload": payload,
+        "support": support,
+        "solution": solution,
+        "difficulty": input_q.get("difficulty", ""),
+        "variants": safe_list(input_q.get("variants")),
+        "randomization": input_q.get("randomization"),
+        "source_ref": input_q.get("source_ref", "internal:import"),
+        "tags": safe_list(input_q.get("tags")),
+        "pack_id": pack_id,
+    }
+
+    # Legacy compatibility for existing renderer/logic.
+    if method_id == "single":
+        options = payload.get("options") if "options" in payload else input_q.get("options")
+        if "correct" in payload:
+            correct = payload.get("correct")
+        elif "correctIndexes" in payload:
+            correct = payload.get("correctIndexes")
+        else:
+            correct = input_q.get("correct")
+        if isinstance(options, list):
+            base["options"] = options
+        if isinstance(correct, list) and len(correct) > 0:
+            try:
+                base["correctIndex"] = int(correct[0])
+            except (TypeError, ValueError):
+                pass
+        elif isinstance(correct, int):
+            base["correctIndex"] = int(correct)
+        elif isinstance(correct, str) and correct.strip().isdigit():
+            base["correctIndex"] = int(correct.strip())
+    if method_id == "multi":
+        options = payload.get("options") if "options" in payload else input_q.get("options")
+        if "correct" in payload:
+            correct = payload.get("correct")
+        elif "correctIndexes" in payload:
+            correct = payload.get("correctIndexes")
+        else:
+            correct = input_q.get("correct")
+        if isinstance(options, list):
+            base["options"] = options
+        if isinstance(correct, list):
+            parsed = []
+            for item in correct:
+                try:
+                    parsed.append(int(item))
+                except (TypeError, ValueError):
+                    continue
+            if parsed:
+                base["correctIndexes"] = parsed
+        elif isinstance(correct, int):
+            base["correctIndexes"] = [int(correct)]
+        elif isinstance(correct, str) and correct.strip().isdigit():
+            base["correctIndexes"] = [int(correct.strip())]
+    if method_id == "truefalse":
+        val = payload.get("correct") if "correct" in payload else input_q.get("correct")
+        if isinstance(val, bool):
+            base["correctBoolean"] = val
+    if method_id == "fillblank":
+        blanks = payload.get("blanks") or input_q.get("answers") or input_q.get("expectedAnswers")
+        if isinstance(blanks, list):
+            base["answers"] = blanks
+    if method_id == "matching":
+        pairs = payload.get("pairs")
+        left = payload.get("left")
+        right = payload.get("right")
+        if isinstance(pairs, list) and len(pairs) > 0 and isinstance(pairs[0], dict):
+            base["pairs"] = pairs
+        elif isinstance(left, list) and isinstance(right, list) and isinstance(pairs, list):
+            mapped = []
+            for pair in pairs:
+                try:
+                    l_idx, r_idx = pair
+                    mapped.append({"left": left[l_idx], "right": right[r_idx]})
+                except Exception:
+                    continue
+            if mapped:
+                base["pairs"] = mapped
+    if method_id == "ordering":
+        items = payload.get("items")
+        correct_order = payload.get("correct_order")
+        if isinstance(items, list) and isinstance(correct_order, list):
+            base["items"] = items
+            base["correct_order"] = correct_order
+    if method_id == "guess":
+        answers = payload.get("answers") or input_q.get("answers")
+        if isinstance(answers, list):
+            base["expectedAnswers"] = answers
+    if method_id == "explain":
+        expected = payload.get("expectedAnswer") or solution.get("final") or input_q.get("expectedAnswer", "")
+        if isinstance(expected, str):
+            base["expectedAnswer"] = expected
+    if method_id == "exam":
+        expected = payload.get("expectedAnswer") or solution.get("final") or input_q.get("expectedAnswer", "")
+        if isinstance(expected, str):
+            base["expectedAnswer"] = expected
+
+    return base
+
+
+def normalize_number(text):
+    if isinstance(text, (int, float)):
+        return float(text)
+    if not isinstance(text, str):
+        return None
+    cleaned = text.strip().replace(",", ".")
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+UNIT_TABLE = {
+    "a": ("a", 1.0),
+    "ma": ("a", 0.001),
+    "ua": ("a", 0.000001),
+    "w": ("w", 1.0),
+    "kw": ("w", 1000.0),
+    "va": ("va", 1.0),
+    "kva": ("va", 1000.0),
+    "v": ("v", 1.0),
+    "mv": ("v", 0.001),
+    "ohm": ("ohm", 1.0),
+}
+
+
+def parse_value_unit(value, unit):
+    raw_unit = unit
+    if unit is None and isinstance(value, str):
+        parts = value.strip().split()
+        if len(parts) == 2:
+            value, unit = parts[0], parts[1]
+            raw_unit = unit
+        else:
+            match = re.match(r"^([0-9\.,]+)\s*([a-zA-Z]+)$", value.strip())
+            if match:
+                value, unit = match.group(1), match.group(2)
+                raw_unit = unit
+    num = normalize_number(value)
+    if num is None:
+        return None, None, raw_unit, "Invalid number"
+    if not unit:
+        return num, None, raw_unit, None
+    key = str(unit).strip().lower()
+    if key not in UNIT_TABLE:
+        return num, None, raw_unit, "Unknown unit"
+    base_unit, factor = UNIT_TABLE[key]
+    return num * factor, base_unit, raw_unit, None
+
+
+def round_value(value, decimals):
+    try:
+        return round(float(value), int(decimals))
+    except (TypeError, ValueError):
+        return value
+
+
+def validate_calc_value_payload(payload):
+    expected = payload.get("expected_value")
+    unit = payload.get("expected_unit")
+    if not isinstance(expected, (int, float)):
+        return False, "calc_value requires expected_value"
+    if not isinstance(unit, str) or not unit:
+        return False, "calc_value requires expected_unit"
+    return True, ""
+
+
+def validate_calc_multi_payload(payload):
+    fields = payload.get("fields")
+    answers = payload.get("answers")
+    if not isinstance(fields, list) or len(fields) == 0:
+        return False, "calc_multi requires fields"
+    if not isinstance(answers, dict) or len(answers) == 0:
+        return False, "calc_multi requires answers"
+    return True, ""
+
+
+def validate_hotspot_payload(payload):
+    svg = payload.get("svg")
+    hotspots = payload.get("hotspots")
+    correct = payload.get("correct")
+    if not isinstance(svg, str) or not svg.strip():
+        return False, "hotspot_svg requires svg"
+    if not isinstance(hotspots, list) or len(hotspots) == 0:
+        return False, "hotspot_svg requires hotspots"
+    if not isinstance(correct, list):
+        return False, "hotspot_svg requires correct"
+    return True, ""
+
+
+def validate_troubleshoot_payload(payload):
+    start = payload.get("start")
+    nodes = payload.get("nodes")
+    success = payload.get("success_node")
+    if not start or not isinstance(nodes, list) or len(nodes) == 0 or not success:
+        return False, "troubleshoot_flow requires start, nodes, success_node"
+    node_ids = {n.get("id") for n in nodes if isinstance(n, dict)}
+    if start not in node_ids or success not in node_ids:
+        return False, "troubleshoot_flow invalid node references"
+    for node in nodes:
+        choices = node.get("choices", [])
+        for c in choices:
+            nxt = c.get("next")
+            if nxt and nxt not in node_ids:
+                return False, "troubleshoot_flow has invalid choice reference"
+    return True, ""
+
 def log_ai(user, action, detail):
     conn = get_db()
     cur = conn.cursor()
@@ -161,6 +515,8 @@ def is_allowed_url(url):
 
 
 def fetch_url_text(url, timeout=10):
+    if OFFLINE_MODE:
+        raise HTTPException(status_code=403, detail="Offline mode enabled")
     if not is_allowed_url(url):
         raise HTTPException(status_code=403, detail="URL not allowed")
     req = urllib.request.Request(
@@ -364,12 +720,26 @@ def init_db():
         )
         """
     )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS packs (
+            id TEXT PRIMARY KEY,
+            schema TEXT,
+            meta TEXT,
+            settings TEXT,
+            methods TEXT,
+            assets TEXT,
+            created_at TEXT
+        )
+        """
+    )
     conn.commit()
 
     # Backfill older schemas.
     ensure_column(conn, "topics", "parent_id", "TEXT")
     ensure_column(conn, "topics", "path", "TEXT")
     ensure_column(conn, "topics", "depth", "INTEGER")
+    ensure_column(conn, "questions", "pack_id", "TEXT", default="default_pack")
     ensure_topic_paths(conn)
 
     conn.close()
@@ -765,7 +1135,10 @@ def seed_data():
 
     for t in topics:
         cur.execute(
-            "INSERT INTO topics (id, name, topic_area, parent_id, path, depth) VALUES (?, ?, ?, ?, ?, ?)",
+            """
+            INSERT OR IGNORE INTO topics (id, name, topic_area, parent_id, path, depth)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
             (t["id"], t["name"], t.get("topic_area", ""), None, t["id"], 0),
         )
     for q in questions:
@@ -859,8 +1232,10 @@ def get_questions(user=Depends(get_current_user)):
     for row in cur.fetchall():
         q = json.loads(row["data"])
         questions.append(q)
+    cur.execute("SELECT * FROM packs")
+    packs = [dict(row) for row in cur.fetchall()]
     conn.close()
-    return {"topics": topics, "questions": questions}
+    return {"topics": topics, "questions": questions, "packs": packs}
 
 
 @app.post("/questions")
@@ -886,8 +1261,8 @@ def create_question(data: dict, user=Depends(get_current_user)):
         )
     cur.execute(
         """
-        INSERT INTO questions (id, topic_id, type, data, explanation, source_ref, tags)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO questions (id, topic_id, type, data, explanation, source_ref, tags, pack_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             data["id"],
@@ -897,6 +1272,7 @@ def create_question(data: dict, user=Depends(get_current_user)):
             data.get("explanation", ""),
             data.get("source_ref", ""),
             json.dumps(data.get("tags", [])),
+            data.get("pack_id", "default_pack"),
         ),
     )
     conn.commit()
@@ -926,7 +1302,7 @@ def update_question(question_id: str, data: dict, user=Depends(get_current_user)
     cur.execute(
         """
         UPDATE questions
-        SET topic_id = ?, type = ?, data = ?, explanation = ?, source_ref = ?, tags = ?
+        SET topic_id = ?, type = ?, data = ?, explanation = ?, source_ref = ?, tags = ?, pack_id = ?
         WHERE id = ?
         """,
         (
@@ -936,6 +1312,7 @@ def update_question(question_id: str, data: dict, user=Depends(get_current_user)
             stored.get("explanation", ""),
             stored.get("source_ref", ""),
             json.dumps(stored.get("tags", [])),
+            stored.get("pack_id", "default_pack"),
             question_id,
         ),
     )
@@ -1181,71 +1558,321 @@ def validate_question_data(question):
         if not isinstance(expected, str):
             raise HTTPException(status_code=400, detail="Exam requires expectedAnswer")
         return
+    if q_type == "calc_value":
+        ok, msg = validate_calc_value_payload(question.get("payload", {}))
+        if not ok:
+            raise HTTPException(status_code=400, detail=msg)
+        return
+    if q_type == "calc_multi":
+        ok, msg = validate_calc_multi_payload(question.get("payload", {}))
+        if not ok:
+            raise HTTPException(status_code=400, detail=msg)
+        return
+    if q_type == "hotspot_svg":
+        ok, msg = validate_hotspot_payload(question.get("payload", {}))
+        if not ok:
+            raise HTTPException(status_code=400, detail=msg)
+        return
+    if q_type == "troubleshoot_flow":
+        ok, msg = validate_troubleshoot_payload(question.get("payload", {}))
+        if not ok:
+            raise HTTPException(status_code=400, detail=msg)
+        return
+
+
+def get_question_record(conn, question_id):
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM questions WHERE id = ?", (question_id,))
+    row = cur.fetchone()
+    if not row:
+        return None
+    data = json.loads(row["data"])
+    return data
+
+
+def compare_set(a, b):
+    return set(a or []) == set(b or [])
+
+
+def grade_question(question, answer):
+    q_type = question.get("type")
+    payload = question.get("payload", {})
+    if q_type == "single":
+        selected = answer.get("selected")
+        correct = selected == question.get("correctIndex")
+        expected = question["options"][question["correctIndex"]]
+        return True, correct, expected, None
+    if q_type == "multi":
+        selected = answer.get("selected") or []
+        correct = compare_set(selected, question.get("correctIndexes", []))
+        expected = ", ".join(
+            [question["options"][i] for i in question.get("correctIndexes", [])]
+        )
+        return True, correct, expected, None
+    if q_type == "truefalse":
+        selected = answer.get("selected")
+        correct = bool(selected) == bool(question.get("correctBoolean"))
+        expected = "True" if question.get("correctBoolean") else "False"
+        return True, correct, expected, None
+    if q_type == "matching":
+        selected = answer.get("selected") or []
+        correct = True
+        pairs = question.get("pairs") or []
+        if len(selected) != len(pairs):
+            correct = False
+        else:
+            for idx, pair in enumerate(pairs):
+                if selected[idx] != pair.get("right"):
+                    correct = False
+                    break
+        expected = "; ".join([f"{p['left']} -> {p['right']}" for p in pairs])
+        return True, correct, expected, None
+    if q_type == "ordering":
+        selected = answer.get("selected") or []
+        correct = selected == question.get("correct_order")
+        expected = ", ".join([str(i + 1) for i in question.get("correct_order", [])])
+        return True, correct, expected, None
+    if q_type == "fillblank":
+        selected = answer.get("selected") or []
+        blanks = question.get("answers") or question.get("expectedAnswers") or []
+        if len(selected) != len(blanks):
+            return True, False, "Fill all blanks", None
+        case_sensitive = payload.get("case_sensitive")
+        if case_sensitive is None:
+            case_sensitive = False
+        correct = True
+        for idx, val in enumerate(selected):
+            accepted = blanks[idx]
+            if not isinstance(accepted, list):
+                accepted = [accepted]
+            if case_sensitive:
+                ok = val in accepted
+            else:
+                ok = str(val).lower() in [str(a).lower() for a in accepted]
+            if not ok:
+                correct = False
+                break
+        expected = " | ".join(
+            ["/".join([str(a) for a in (b if isinstance(b, list) else [b])]) for b in blanks]
+        )
+        return True, correct, expected, None
+    if q_type == "guess":
+        value = answer.get("text", "")
+        accepted = question.get("expectedAnswers") or []
+        correct = str(value).lower() in [str(a).lower() for a in accepted]
+        expected = ", ".join([str(a) for a in accepted])
+        return True, correct, expected, None
+    if q_type in ("explain", "exam"):
+        expected = question.get("expectedAnswer") or ""
+        return False, None, expected, None
+    if q_type == "calc_value":
+        expected_value = payload.get("expected_value")
+        expected_unit = payload.get("expected_unit")
+        accept_units = payload.get("accept_units") or [expected_unit]
+        rounding = payload.get("rounding_decimals", 2)
+        tol = payload.get("tolerance") or {"mode": "absolute", "value": 0}
+        if "raw" in answer:
+            user_value, user_unit, raw_unit, err = parse_value_unit(answer.get("raw"), None)
+        else:
+            user_value, user_unit, raw_unit, err = parse_value_unit(
+                answer.get("value"), answer.get("unit")
+            )
+        if err:
+            return True, False, "Invalid value/unit", err
+        expected_base, expected_unit_base, _, err2 = parse_value_unit(
+            expected_value, expected_unit
+        )
+        if err2:
+            return True, False, "Invalid expected unit", err2
+        if raw_unit and accept_units:
+            allowed_units = [str(u).lower() for u in accept_units if u]
+            if str(raw_unit).lower() not in allowed_units:
+                return True, False, "Unit not accepted", "Unit not accepted"
+            return True, False, "Unit not accepted", "Unit not accepted"
+        if expected_unit_base and user_unit and expected_unit_base != user_unit:
+            return True, False, "Wrong unit", "Wrong unit"
+        user_value = round_value(user_value, rounding)
+        expected_base = round_value(expected_base, rounding)
+        diff = abs(user_value - expected_base)
+        mode = tol.get("mode", "absolute")
+        tol_val = float(tol.get("value", 0))
+        if mode == "relative":
+            allowed = abs(expected_base) * tol_val
+        else:
+            allowed = tol_val
+        correct = diff <= allowed
+        expected = f"{expected_base} {expected_unit}"
+        return True, correct, expected, None
+    if q_type == "calc_multi":
+        fields = payload.get("fields") or []
+        answers = payload.get("answers") or {}
+        input_fields = answer.get("fields") or {}
+        all_correct = True
+        for field in fields:
+            fid = field.get("id")
+            expected = answers.get(fid)
+            if fid not in input_fields or expected is None:
+                all_correct = False
+                continue
+            user = input_fields.get(fid, {})
+            user_value, user_unit, raw_unit, err = parse_value_unit(
+                user.get("value"), user.get("unit")
+            )
+            if err:
+                all_correct = False
+                continue
+            expected_value, expected_unit, _, err2 = parse_value_unit(
+                expected.get("value"), expected.get("unit")
+            )
+            if err2:
+                all_correct = False
+                continue
+            if expected_unit and user_unit and expected_unit != user_unit:
+                all_correct = False
+                continue
+            decimals = field.get("decimals", 2)
+            tol = field.get("tolerance") or {"mode": "absolute", "value": 0}
+            user_value = round_value(user_value, decimals)
+            expected_value = round_value(expected_value, decimals)
+            diff = abs(user_value - expected_value)
+            mode = tol.get("mode", "absolute")
+            tol_val = float(tol.get("value", 0))
+            if mode == "relative":
+                allowed = abs(expected_value) * tol_val
+            else:
+                allowed = tol_val
+            if diff > allowed:
+                all_correct = False
+        expected_text = ", ".join([f"{k}: {v.get('value')} {v.get('unit','')}".strip() for k, v in answers.items()])
+        return True, all_correct, expected_text, None
+    if q_type == "hotspot_svg":
+        correct = compare_set(answer.get("selected") or [], payload.get("correct") or [])
+        expected = ", ".join([str(x) for x in payload.get("correct") or []])
+        return True, correct, expected, None
+    if q_type == "troubleshoot_flow":
+        final_node = answer.get("final_node")
+        correct = final_node == payload.get("success_node")
+        expected = payload.get("success_node")
+        return True, correct, expected, None
+    return True, False, "Unknown type", "Unknown type"
+
+
+def import_quiztab_v2(pack, replace_duplicates):
+    errors = []
+    topics_input = pack.get("topics", [])
+    questions_input = pack.get("questions", [])
+    if not isinstance(topics_input, list) or not isinstance(questions_input, list):
+        raise HTTPException(status_code=400, detail="Invalid quiztab pack")
+
+    topic_map = build_topic_map(topics_input, errors)
+    pack_id = get_pack_id(pack)
+
+    normalized = []
+    summary = {"total": 0, "valid": 0, "invalid": 0, "types": {}, "topics": {}}
+    for q in questions_input:
+        summary["total"] += 1
+        nq = normalize_quiztab_question(q, topic_map, errors, pack_id)
+        if nq:
+            validate_question_data(nq)
+            normalized.append(nq)
+            summary["valid"] += 1
+            summary["types"][nq["type"]] = summary["types"].get(nq["type"], 0) + 1
+            summary["topics"][nq["topicId"]] = summary["topics"].get(nq["topicId"], 0) + 1
+        else:
+            summary["invalid"] += 1
+
+    conn = get_db()
+    cur = conn.cursor()
+    added = 0
+    skipped = 0
+    replaced = 0
+
+    for t in topic_map.values():
+        cur.execute("SELECT 1 FROM topics WHERE id = ?", (t["id"],))
+        if not cur.fetchone():
+            cur.execute(
+                "INSERT INTO topics (id, name, topic_area, parent_id, path, depth) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    t["id"],
+                    t["name"],
+                    t.get("topic_area", ""),
+                    t.get("parent_id"),
+                    t.get("path") or t["id"],
+                    t.get("depth", 0),
+                ),
+            )
+
+    upsert_pack(conn, pack_id, pack)
+
+    for q in normalized:
+        cur.execute("SELECT 1 FROM questions WHERE id = ?", (q["id"],))
+        exists = cur.fetchone() is not None
+        if exists and not replace_duplicates:
+            skipped += 1
+            continue
+        if exists and replace_duplicates:
+            cur.execute(
+                """
+                UPDATE questions
+                SET topic_id = ?, type = ?, data = ?, explanation = ?, source_ref = ?, tags = ?, pack_id = ?
+                WHERE id = ?
+                """,
+                (
+                    q["topicId"],
+                    q["type"],
+                    json.dumps(q),
+                    q.get("explanation", ""),
+                    q.get("source_ref", ""),
+                    json.dumps(q.get("tags", [])),
+                    q.get("pack_id"),
+                    q["id"],
+                ),
+            )
+            replaced += 1
+            continue
+        cur.execute(
+            """
+            INSERT INTO questions (id, topic_id, type, data, explanation, source_ref, tags, pack_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                q["id"],
+                q["topicId"],
+                q["type"],
+                json.dumps(q),
+                q.get("explanation", ""),
+                q.get("source_ref", ""),
+                json.dumps(q.get("tags", [])),
+                q.get("pack_id"),
+            ),
+        )
+        added += 1
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "summary": summary,
+        "errors": errors[:5],
+        "added": added,
+        "skipped": skipped,
+        "replaced": replaced,
+        "pack_id": pack_id,
+    }
 
 
 @app.post("/questions/import")
 def import_questions(data: dict, replace_duplicates: bool = False, user=Depends(get_current_user)):
     schema = data.get("schema")
+    if schema == "quiztab-questionpack-v2":
+        return import_quiztab_v2(data, replace_duplicates)
     if schema not in ("ap2-questionpack-v1", "ap2-questionpack-v2"):
         raise HTTPException(status_code=400, detail="Invalid schema")
     topics_input = data.get("topics", [])
     questions_input = data.get("questions", [])
     stems_input = data.get("stems", [])
     errors = []
-    topic_map = {}
-    for t in topics_input:
-        slug = t.get("slug") or t.get("id") or t.get("topic_id")
-        if slug:
-            parent_id = t.get("parent_topic_id") or t.get("parent_id")
-            topic_map[slug] = {
-                "id": slug,
-                "name": t.get("title") or t.get("name") or slug_to_title(slug),
-                "topic_area": t.get("topic_area", ""),
-                "parent_id": parent_id,
-                "path": t.get("path"),
-                "depth": t.get("depth"),
-            }
-        else:
-            errors.append("Topic missing slug/id.")
-
-    # Build paths/depths for topic tree.
-    visiting = set()
-    visited = set()
-
-    def compute_tree(slug):
-        if slug in visited:
-            return
-        if slug in visiting:
-            errors.append(f"Topic cycle detected at {slug}.")
-            return
-        visiting.add(slug)
-        node = topic_map.get(slug, {})
-        parent_id = node.get("parent_id")
-        if parent_id and parent_id not in topic_map:
-            topic_map[parent_id] = {
-                "id": parent_id,
-                "name": slug_to_title(parent_id),
-                "topic_area": "",
-                "parent_id": None,
-                "path": parent_id,
-                "depth": 0,
-            }
-        if parent_id:
-            compute_tree(parent_id)
-            parent = topic_map[parent_id]
-            if not node.get("path"):
-                node["path"] = f"{parent['path']}/{slug}"
-            if node.get("depth") is None:
-                node["depth"] = (parent.get("depth") or 0) + 1
-        else:
-            node["path"] = node.get("path") or slug
-            node["depth"] = node.get("depth") if node.get("depth") is not None else 0
-        topic_map[slug] = node
-        visiting.remove(slug)
-        visited.add(slug)
-
-    for slug in list(topic_map.keys()):
-        compute_tree(slug)
+    topic_map = build_topic_map(topics_input, errors)
 
     # Expand stems into questions.
     for stem in stems_input:
@@ -1478,6 +2105,249 @@ def export_questions(user=Depends(get_current_user)):
     return pack
 
 
+@app.get("/packs/export")
+def export_pack(schema: str = "quiztab-questionpack-v2", pack_id: str = "default_pack", user=Depends(get_current_user)):
+    if schema != "quiztab-questionpack-v2":
+        raise HTTPException(status_code=400, detail="Unsupported schema")
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM packs WHERE id = ?", (pack_id,))
+    pack_row = cur.fetchone()
+    if pack_row:
+        meta = json.loads(pack_row["meta"]) if pack_row["meta"] else {}
+        settings = json.loads(pack_row["settings"]) if pack_row["settings"] else {}
+        methods = json.loads(pack_row["methods"]) if pack_row["methods"] else []
+        assets = json.loads(pack_row["assets"]) if pack_row["assets"] else []
+    else:
+        meta = {"title": "QuizTab Export", "created_at": datetime.now().strftime("%Y-%m-%d")}
+        settings = {}
+        methods = []
+        assets = []
+
+    cur.execute("SELECT * FROM topics")
+    topics = [dict(row) for row in cur.fetchall()]
+    cur.execute("SELECT data FROM questions WHERE pack_id = ?", (pack_id,))
+    questions = [json.loads(row["data"]) for row in cur.fetchall()]
+    conn.close()
+
+    pack = {
+        "schema": "quiztab-questionpack-v2",
+        "meta": meta,
+        "settings": settings,
+        "topics": [
+            {
+                "slug": t["id"],
+                "title": t["name"],
+                "topic_area": t.get("topic_area", ""),
+                "parent_topic_id": t.get("parent_id"),
+                "path": t.get("path") or t["id"],
+                "depth": t.get("depth") if t.get("depth") is not None else 0,
+            }
+            for t in topics
+        ],
+        "methods": methods,
+        "assets": assets,
+        "questions": [
+            {
+                "id": q.get("id"),
+                "topic_slug": q.get("topicId"),
+                "method_id": q.get("method_id") or q.get("type"),
+                "difficulty": q.get("difficulty", ""),
+                "prompt": q.get("prompt"),
+                "payload": q.get("payload", {}),
+                "support": q.get("support", {}),
+                "solution": q.get("solution", {}),
+                "source_ref": q.get("source_ref", ""),
+                "tags": q.get("tags", []),
+                "variants": q.get("variants", []),
+                "randomization": q.get("randomization"),
+            }
+            for q in questions
+        ],
+    }
+    return pack
+
+
+def parse_frontmatter(text):
+    lines = text.splitlines()
+    header = {}
+    body_start = 0
+    if lines and lines[0].strip().startswith("{"):
+        buf = []
+        for idx, line in enumerate(lines):
+            buf.append(line)
+            if line.strip().endswith("}"):
+                body_start = idx + 1
+                try:
+                    header = json.loads("\n".join(buf))
+                except json.JSONDecodeError:
+                    header = {}
+                break
+    else:
+        for idx, line in enumerate(lines):
+            if not line.strip():
+                body_start = idx + 1
+                break
+            if ":" in line:
+                key, val = line.split(":", 1)
+                header[key.strip()] = val.strip()
+        else:
+            body_start = len(lines)
+    return header, "\n".join(lines[body_start:])
+
+
+def parse_sectioned_body(body):
+    sections = {"prompt": "", "payload": "", "support": "", "solution": ""}
+    current = None
+    for line in body.splitlines():
+        key = line.strip().lower()
+        if key.startswith("prompt:"):
+            current = "prompt"
+            sections[current] = line.split(":", 1)[1].strip()
+            continue
+        if key.startswith("payload:"):
+            current = "payload"
+            sections[current] = line.split(":", 1)[1].strip()
+            continue
+        if key.startswith("support:"):
+            current = "support"
+            sections[current] = line.split(":", 1)[1].strip()
+            continue
+        if key.startswith("solution:"):
+            current = "solution"
+            sections[current] = line.split(":", 1)[1].strip()
+            continue
+        if current:
+            sections[current] += ("\n" if sections[current] else "") + line
+    return sections
+
+
+@app.post("/packs/import_markdown_zip")
+def import_markdown_zip(file: UploadFile = File(...), user=Depends(get_current_user)):
+    raw = file.file.read()
+    zf = zipfile.ZipFile(io.BytesIO(raw))
+    questions = []
+    topics = {}
+    for name in zf.namelist():
+        if not name.lower().endswith(".md"):
+            continue
+        content = zf.read(name).decode("utf-8", errors="ignore")
+        header, body = parse_frontmatter(content)
+        sections = parse_sectioned_body(body)
+        qid = header.get("id") or f"q_{uuid.uuid4().hex}"
+        topic_slug = header.get("topic_slug") or "general"
+        method_id = header.get("method_id") or "multi"
+        difficulty = header.get("difficulty") or ""
+        tags = [t.strip() for t in (header.get("tags") or "").split(",") if t.strip()]
+        source_ref = header.get("source_ref") or "internal:import"
+
+        def parse_json_block(text):
+            if not text.strip():
+                return {}
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return {}
+
+        payload = parse_json_block(sections.get("payload", ""))
+        support = parse_json_block(sections.get("support", ""))
+        solution = parse_json_block(sections.get("solution", ""))
+        prompt = sections.get("prompt", "").strip()
+        questions.append(
+            {
+                "id": qid,
+                "topic_slug": topic_slug,
+                "method_id": method_id,
+                "difficulty": difficulty,
+                "prompt": prompt,
+                "payload": payload,
+                "support": support,
+                "solution": solution,
+                "source_ref": source_ref,
+                "tags": tags,
+            }
+        )
+        topics[topic_slug] = {"slug": topic_slug, "title": slug_to_title(topic_slug)}
+
+    pack = {
+        "schema": "quiztab-questionpack-v2",
+        "meta": {
+            "title": "Markdown Import",
+            "created_at": datetime.now().strftime("%Y-%m-%d"),
+            "source": "markdown_zip",
+        },
+        "settings": {},
+        "topics": list(topics.values()),
+        "methods": [],
+        "assets": [],
+        "questions": questions,
+    }
+    return import_quiztab_v2(pack, replace_duplicates=False)
+
+
+@app.post("/packs/import_excel")
+def import_excel(file: UploadFile = File(...), user=Depends(get_current_user)):
+    import openpyxl
+
+    raw = file.file.read()
+    wb = openpyxl.load_workbook(io.BytesIO(raw))
+    if "questions" not in wb.sheetnames:
+        raise HTTPException(status_code=400, detail="Missing sheet 'questions'")
+    ws = wb["questions"]
+    headers = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
+    idx = {name: i for i, name in enumerate(headers) if name}
+    questions = []
+    topics = {}
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        qid = row[idx.get("id")] if "id" in idx else None
+        topic_slug = row[idx.get("topic_slug")] if "topic_slug" in idx else "general"
+        method_id = row[idx.get("method_id")] if "method_id" in idx else "multi"
+        prompt = row[idx.get("prompt")] if "prompt" in idx else ""
+        payload_raw = row[idx.get("payload_json")] if "payload_json" in idx else "{}"
+        solution_raw = row[idx.get("solution_json")] if "solution_json" in idx else "{}"
+        tags_raw = row[idx.get("tags_csv")] if "tags_csv" in idx else ""
+        source_ref = row[idx.get("source_ref")] if "source_ref" in idx else "internal:import"
+        try:
+            payload = json.loads(payload_raw or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        try:
+            solution = json.loads(solution_raw or "{}")
+        except json.JSONDecodeError:
+            solution = {}
+        tags = [t.strip() for t in str(tags_raw or "").split(",") if t.strip()]
+        questions.append(
+            {
+                "id": qid or f"q_{uuid.uuid4().hex}",
+                "topic_slug": topic_slug or "general",
+                "method_id": method_id or "multi",
+                "difficulty": "",
+                "prompt": prompt or "",
+                "payload": payload,
+                "support": {},
+                "solution": solution,
+                "source_ref": source_ref,
+                "tags": tags,
+            }
+        )
+        topics[topic_slug] = {"slug": topic_slug, "title": slug_to_title(topic_slug)}
+
+    pack = {
+        "schema": "quiztab-questionpack-v2",
+        "meta": {
+            "title": "Excel Import",
+            "created_at": datetime.now().strftime("%Y-%m-%d"),
+            "source": "excel",
+        },
+        "settings": {},
+        "topics": list(topics.values()),
+        "methods": [],
+        "assets": [],
+        "questions": questions,
+    }
+    return import_quiztab_v2(pack, replace_duplicates=False)
+
+
 @app.get("/topics")
 def get_topics(user=Depends(get_current_user)):
     conn = get_db()
@@ -1689,6 +2559,164 @@ def create_attempt(data: dict, user=Depends(get_current_user)):
     conn.commit()
     conn.close()
     return {"status": "created", "id": attempt_id}
+
+
+@app.post("/questions/{question_id}/grade")
+def grade_question_endpoint(question_id: str, data: dict, user=Depends(get_current_user)):
+    conn = get_db()
+    question = get_question_record(conn, question_id)
+    conn.close()
+    if not question:
+        raise HTTPException(status_code=404, detail="Question not found")
+    answer = data.get("answer") or {}
+    can_auto, correct, expected, debug = grade_question(question, answer)
+    if not can_auto:
+        return {
+            "status": "needs_self_grade",
+            "correct": None,
+            "expected": expected,
+            "feedback": "Self grading required",
+            "solution": question.get("solution"),
+            "normalized_answer": answer,
+        }
+    return {
+        "status": "graded",
+        "correct": bool(correct),
+        "expected": expected,
+        "feedback": "",
+        "solution": question.get("solution"),
+        "normalized_answer": answer,
+        "debug": debug,
+    }
+
+
+@app.post("/questions/{question_id}/instantiate")
+def instantiate_question(question_id: str, data: dict, user=Depends(get_current_user)):
+    seed = data.get("seed")
+    variant_id = data.get("variant_id")
+    mode = data.get("mode", "variant")
+    if seed is None:
+        seed = int(time.time() * 1000) % 100000
+    conn = get_db()
+    question = get_question_record(conn, question_id)
+    conn.close()
+    if not question:
+        raise HTTPException(status_code=404, detail="Question not found")
+
+    rng = random.Random(seed)
+    resolved = json.loads(json.dumps(question))
+    params = {}
+
+    variants = resolved.get("variants") or []
+    if variants:
+        chosen = None
+        if variant_id:
+            for v in variants:
+                if v.get("variant_id") == variant_id:
+                    chosen = v
+                    break
+        if not chosen:
+            idx = seed % len(variants)
+            chosen = variants[idx]
+        overrides = chosen.get("param_overrides") or {}
+        expected = chosen.get("expected") or {}
+        params.update(overrides)
+        if overrides:
+            resolved.setdefault("payload", {}).update(overrides)
+        if expected:
+            resolved.setdefault("solution", {}).update(expected)
+
+    randomization = resolved.get("randomization") or {}
+    if randomization:
+        ranges = randomization.get("ranges") or {}
+        for key, spec in ranges.items():
+            min_v = spec.get("min")
+            max_v = spec.get("max")
+            if isinstance(min_v, (int, float)) and isinstance(max_v, (int, float)):
+                params[key] = rng.uniform(min_v, max_v)
+        # Replace placeholders in prompt/payload/solution.
+        if params:
+            def replace_placeholders(text):
+                for k, v in params.items():
+                    text = text.replace(f"{{{{{k}}}}}", str(v))
+                return text
+            if isinstance(resolved.get("prompt"), str):
+                resolved["prompt"] = replace_placeholders(resolved["prompt"])
+            for section in ("payload", "solution", "support"):
+                obj = resolved.get(section)
+                if isinstance(obj, dict):
+                    resolved[section] = json.loads(
+                        replace_placeholders(json.dumps(obj))
+                    )
+
+    return {
+        "instance_id": f"inst_{uuid.uuid4().hex}",
+        "seed": seed,
+        "question": resolved,
+        "params": params,
+    }
+
+
+@app.get("/progress/summary")
+def get_progress_summary(user=Depends(get_current_user)):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT id, topic_id, type FROM questions")
+    questions = [dict(row) for row in cur.fetchall()]
+    cur.execute("SELECT * FROM attempts WHERE username = ?", (user,))
+    attempts_rows = [dict(row) for row in cur.fetchall()]
+    conn.close()
+
+    attempts_by_q = {}
+    for att in attempts_rows:
+        attempts_by_q.setdefault(att["question_id"], []).append(att)
+    for att_list in attempts_by_q.values():
+        att_list.sort(key=lambda a: a.get("timestamp") or "")
+
+    totals = {
+        "questions_total": len(questions),
+        "attempted_unique": len(attempts_by_q),
+        "correct_unique": len([k for k, v in attempts_by_q.items() if any(a["correct"] for a in v)]),
+    }
+
+    by_topic = {}
+    by_type = {}
+
+    for q in questions:
+        qid = q["id"]
+        topic = q["topic_id"] or "unknown"
+        qtype = q["type"] or "unknown"
+        atts = attempts_by_q.get(qid, [])
+        attempted = len(atts) > 0
+        correct = sum(1 for a in atts if a["correct"])
+        accuracy = correct / len(atts) if atts else 0
+        last_three = atts[-3:] if len(atts) >= 3 else atts
+        mastery = len(last_three) == 3 and all(a["correct"] for a in last_three)
+
+        for bucket, key in ((by_topic, topic), (by_type, qtype)):
+            entry = bucket.setdefault(
+                key,
+                {
+                    "attempted": 0,
+                    "correct": 0,
+                    "accuracy": 0,
+                    "mastery_count": 0,
+                    "questions_total": 0,
+                },
+            )
+            entry["questions_total"] += 1
+            if attempted:
+                entry["attempted"] += 1
+            entry["correct"] += correct
+            entry["mastery_count"] += 1 if mastery else 0
+
+    for bucket in (by_topic, by_type):
+        for entry in bucket.values():
+            entry["accuracy"] = (
+                entry["correct"] / entry["attempted"] if entry["attempted"] else 0
+            )
+
+    return {"totals": totals, "by_topic": by_topic, "by_type": by_type}
 
 
 @app.get("/appointments")

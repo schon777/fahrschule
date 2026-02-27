@@ -579,6 +579,100 @@ body {
   border: 1px solid var(--line);
 }
 
+.support-panel {
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  background: #fffaf2;
+  display: grid;
+  gap: 8px;
+}
+
+.support-section {
+  display: grid;
+  gap: 6px;
+}
+
+.support-title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+}
+
+.support-body {
+  display: grid;
+  gap: 4px;
+}
+
+.support-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.support-table th,
+.support-table td {
+  border: 1px solid var(--line);
+  padding: 4px 6px;
+  text-align: left;
+}
+
+.support-pre {
+  background: #f6f1e7;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px;
+  white-space: pre-wrap;
+  font-size: 12px;
+}
+
+.hotspot-wrap {
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  padding: 8px;
+  background: #fff;
+}
+
+.hotspot-clickable {
+  cursor: pointer;
+  stroke: var(--accent-2);
+  stroke-width: 2px;
+}
+
+.hotspot-active {
+  fill: rgba(208, 103, 61, 0.35);
+}
+
+.flow-panel {
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: #fffaf2;
+  display: grid;
+  gap: 8px;
+}
+
+.flow-node {
+  font-weight: 600;
+}
+
+.flow-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.flow-path {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.flow-controls {
+  display: flex;
+  gap: 8px;
+}
+
 .warning {
   margin-top: 12px;
   background: #fff4e6;

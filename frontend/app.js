@@ -26,6 +26,9 @@
     quizMode: "mixed",
     lastImportSummary: null,
     overrideQuestion: null,
+    currentInstance: null,
+    currentRenderedQuestion: null,
+    progressSummary: null,
     isAuthenticated: false,
     managerTopic: "all",
     managerType: "all",
@@ -77,6 +80,8 @@
     isoWeek: document.getElementById("iso-week"),
     totalQuestions: document.getElementById("total-questions"),
     answeredQuestions: document.getElementById("answered-questions"),
+    accuracyOverall: document.getElementById("accuracy-overall"),
+    masteryOverall: document.getElementById("mastery-overall"),
     weekAttempts: document.getElementById("week-attempts"),
     weekCorrect: document.getElementById("week-correct"),
     weekAvgTime: document.getElementById("week-avg-time"),
@@ -177,7 +182,15 @@
     calendarNext: document.getElementById("cal-next")
   };
 
-  let dataStore = { topics: [], questions: [] };
+  let dataStore = {
+    topics: [],
+    questions: [],
+    packs: [],
+    methods: [],
+    assets: [],
+    settings: {},
+    meta: {}
+  };
   let questionOrder = new Map();
   let managerEditId = null;
   let managerSelectedIds = new Set();
@@ -603,6 +616,23 @@
 
     ui.totalQuestions.textContent = total;
     ui.answeredQuestions.textContent = attemptedIds.size;
+    if (state.progressSummary && state.progressSummary.totals) {
+      const totals = state.progressSummary.totals;
+      const accuracy =
+        totals.attempted_unique > 0
+          ? Math.round((totals.correct_unique / totals.attempted_unique) * 100)
+          : 0;
+      let masteryCount = 0;
+      const byType = state.progressSummary.by_type || {};
+      Object.values(byType).forEach((entry) => {
+        masteryCount += entry.mastery_count || 0;
+      });
+      ui.accuracyOverall.textContent = `${accuracy}%`;
+      ui.masteryOverall.textContent = masteryCount;
+    } else {
+      ui.accuracyOverall.textContent = "-";
+      ui.masteryOverall.textContent = "-";
+    }
 
     renderTopicsTable(total, attemptedIds, correctIds);
     renderLearningSpeed(now, total, correctIds);
@@ -691,8 +721,8 @@
     });
   }
 
-  function renderQuiz(forceNext) {
-    const question = state.overrideQuestion || getNextQuestion(forceNext);
+  async function renderQuiz(forceNext) {
+    let question = state.overrideQuestion || getNextQuestion(forceNext);
     state.overrideQuestion = null;
     if (!question) {
       showWarning("No questions available.");
@@ -701,9 +731,33 @@
       setSubmitEnabled(false);
       return;
     }
+    if (question.variants || question.randomization) {
+      try {
+        const seed = getQuestionSeed(question);
+        const inst = await apiFetch(
+          `/questions/${encodeURIComponent(question.id)}/instantiate`,
+          {
+            method: "POST",
+            body: JSON.stringify({ seed, mode: "variant" })
+          }
+        );
+        question = inst.question || question;
+        state.currentInstance = {
+          id: inst.instance_id,
+          seed: inst.seed,
+          params: inst.params || {}
+        };
+      } catch (error) {
+        logger.warn("quiz", "instantiate failed", { error: String(error) });
+        state.currentInstance = null;
+      }
+    } else {
+      state.currentInstance = null;
+    }
     currentQuestionStartAt = Date.now();
     state.currentQuestionId = question.id;
     state.currentTopicId = question.topicId;
+    state.currentRenderedQuestion = question;
     ui.quizMeta.textContent = `Topic: ${question.topicId} | Type: ${question.type}`;
     ui.quizForm.innerHTML = "";
     ui.quizResult.textContent = "";
@@ -711,6 +765,7 @@
     form.className = "quiz-form";
     form.id = "quiz-form";
     form.innerHTML = `<div class="quiz-prompt">${escapeHtml(question.prompt)}</div>`;
+    form.innerHTML += renderSupportPanel(question);
 
     const type = question.type;
     if (type === "multi") {
@@ -815,6 +870,68 @@
         )
         .join("");
       setSubmitEnabled(true);
+    } else if (type === "calc_value") {
+      const payload = question.payload || {};
+      const units = payload.accept_units || [payload.expected_unit || ""];
+      form.innerHTML += `
+        <label class="quiz-option">
+          <input type="text" name="calc-value" placeholder="Enter value" />
+        </label>
+        <label class="quiz-option">
+          <select name="calc-unit">
+            ${units.map((u) => `<option value="${escapeHtml(u)}">${escapeHtml(u)}</option>`).join("")}
+          </select>
+        </label>
+        <div class="muted">Round to ${payload.rounding_decimals || 2} decimals.</div>
+      `;
+      setSubmitEnabled(true);
+    } else if (type === "calc_multi") {
+      const payload = question.payload || {};
+      const fields = payload.fields || [];
+      fields.forEach((field) => {
+        const unit = field.unit || "";
+        form.innerHTML += `
+          <div class="matching-row">
+            <div>${escapeHtml(field.label || field.id)}</div>
+            <input type="text" name="calc-field-${escapeHtml(field.id)}" placeholder="Value" />
+            <input type="text" name="calc-unit-${escapeHtml(field.id)}" value="${escapeHtml(unit)}" />
+          </div>
+        `;
+      });
+      setSubmitEnabled(true);
+    } else if (type === "hotspot_svg") {
+      const payload = question.payload || {};
+      const safeSvg = sanitizeSvg(payload.svg || "");
+      form.innerHTML += `
+        <div class="hotspot-wrap">${safeSvg}</div>
+        <div class="muted" id="hotspot-selected">Selected: none</div>
+      `;
+      form._hotspotSelected = new Set();
+      setSubmitEnabled(true);
+      setTimeout(() => {
+        const svgRoot = form.querySelector(".hotspot-wrap svg");
+        const hotspots = payload.hotspots || [];
+        hotspots.forEach((spot) => {
+          const el = svgRoot ? svgRoot.querySelector(`#${spot.svg_element_id}`) : null;
+          if (!el) return;
+          el.classList.add("hotspot-clickable");
+          el.addEventListener("click", () => {
+            if (form._hotspotSelected.has(spot.id)) {
+              form._hotspotSelected.delete(spot.id);
+              el.classList.remove("hotspot-active");
+            } else {
+              form._hotspotSelected.add(spot.id);
+              el.classList.add("hotspot-active");
+            }
+            const selectedText = Array.from(form._hotspotSelected).join(", ") || "none";
+            const label = form.querySelector("#hotspot-selected");
+            if (label) label.textContent = `Selected: ${selectedText}`;
+          });
+        });
+      }, 0);
+    } else if (type === "troubleshoot_flow") {
+      renderTroubleshootFlow(form, question);
+      setSubmitEnabled(true);
     } else {
       form.innerHTML += `<div class="warning">This question type is not implemented yet.</div>`;
       logger.warn("quiz", "type not implemented", { type });
@@ -826,10 +943,153 @@
     updateDebugPanel();
   }
 
+  function getQuestionSeed(question) {
+    const base = `${question.id}|${attempts.length}`;
+    let hash = 0;
+    for (let i = 0; i < base.length; i += 1) {
+      hash = (hash << 5) - hash + base.charCodeAt(i);
+      hash |= 0;
+    }
+    return Math.abs(hash);
+  }
+
+  function sanitizeSvg(svgText) {
+    if (!svgText) return "";
+    return svgText.replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, "");
+  }
+
+  function resolveAssetById(id) {
+    return (dataStore.assets || []).find((a) => a.id === id);
+  }
+
+  function renderTableAsset(asset) {
+    if (!asset) return "";
+    if (asset.type === "table" && asset.content && Array.isArray(asset.content.rows)) {
+      const headers = Array.isArray(asset.content.headers)
+        ? asset.content.headers
+        : null;
+      const rows = asset.content.rows;
+      const headerHtml = headers
+        ? `<tr>${headers.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr>`
+        : "";
+      const bodyHtml = rows
+        .map(
+          (row) =>
+            `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`
+        )
+        .join("");
+      return `<table class="support-table">${headerHtml}${bodyHtml}</table>`;
+    }
+    return `<pre class="support-pre">${escapeHtml(asset.content || "")}</pre>`;
+  }
+
+  function renderSupportPanel(question) {
+    const support = question.support || {};
+    if (!support || Object.keys(support).length === 0) return "";
+    const parts = [];
+    const addSection = (title, items) => {
+      if (!items || (Array.isArray(items) && items.length === 0)) return;
+      const list = Array.isArray(items) ? items : [items];
+      parts.push(
+        `<div class="support-section"><div class="support-title">${escapeHtml(
+          title
+        )}</div><div class="support-body">${list
+          .map((i) => `<div>${escapeHtml(String(i))}</div>`)
+          .join("")}</div></div>`
+      );
+    };
+    addSection("Given", support.given);
+    addSection("Formula sheet", support.formula_sheet);
+    addSection("Assumptions", support.assumptions);
+    addSection("Units", support.units_guide);
+    addSection("Belegsatz", support.belegsatz_snippets);
+    if (support.tables && support.tables.length) {
+      const tableHtml = support.tables
+        .map((tbl) => {
+          if (typeof tbl === "string") {
+            const asset = resolveAssetById(tbl);
+            return renderTableAsset(asset);
+          }
+          if (tbl && tbl.rows) {
+            return renderTableAsset({ type: "table", content: tbl });
+          }
+          return "";
+        })
+        .join("");
+      parts.push(
+        `<div class="support-section"><div class="support-title">Tables</div><div class="support-body">${tableHtml}</div></div>`
+      );
+    }
+    return `<div class="support-panel">${parts.join("")}</div>`;
+  }
+
+  function renderTroubleshootFlow(form, question) {
+    const payload = question.payload || {};
+    const nodes = payload.nodes || [];
+    const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+    form._flowState = {
+      path: [],
+      current: payload.start
+    };
+    const container = document.createElement("div");
+    container.className = "flow-panel";
+    const renderNode = () => {
+      const node = nodeMap.get(form._flowState.current);
+      if (!node) return;
+      container.innerHTML = `
+        <div class="flow-node">${escapeHtml(node.text || node.label || node.id)}</div>
+        <div class="flow-actions"></div>
+        <div class="flow-path">${form._flowState.path
+          .map((p) => escapeHtml(`${p.node_id}:${p.choice_id}`))
+          .join(" > ")}</div>
+      `;
+      const actions = container.querySelector(".flow-actions");
+      (node.choices || []).forEach((choice) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "ghost";
+        btn.textContent = choice.label || choice.id || "Next";
+        btn.addEventListener("click", () => {
+          form._flowState.path.push({
+            node_id: node.id,
+            choice_id: choice.id,
+            next: choice.next
+          });
+          if (choice.next) {
+            form._flowState.current = choice.next;
+            renderNode();
+          }
+        });
+        actions.appendChild(btn);
+      });
+    };
+    renderNode();
+    const controls = document.createElement("div");
+    controls.className = "flow-controls";
+    controls.innerHTML = `
+      <button type="button" class="ghost" data-action="back">Back</button>
+      <button type="button" class="ghost" data-action="reset">Reset</button>
+    `;
+    controls.querySelector("[data-action='back']").addEventListener("click", () => {
+      const last = form._flowState.path.pop();
+      if (last && last.node_id) {
+        form._flowState.current = last.node_id;
+      }
+      renderNode();
+    });
+    controls.querySelector("[data-action='reset']").addEventListener("click", () => {
+      form._flowState.path = [];
+      form._flowState.current = payload.start;
+      renderNode();
+    });
+    form.appendChild(container);
+    form.appendChild(controls);
+  }
+
   async function submitAnswer() {
-    const question = dataStore.questions.find(
-      (q) => q.id === state.currentQuestionId
-    );
+    const question =
+      state.currentRenderedQuestion ||
+      dataStore.questions.find((q) => q.id === state.currentQuestionId);
     if (!question) {
       showWarning("Invalid question state.");
       logger.error("quiz", "missing question");
@@ -840,37 +1100,31 @@
       ? Date.now() - currentQuestionStartAt
       : null;
     const type = question.type;
-    let correct = false;
-    let expected = "";
-    let selected = null;
-    let gradedByUser = false;
+    let answerPayload = null;
 
     if (type === "multi") {
-      selected = Array.from(
+      const selected = Array.from(
         ui.quizForm.querySelectorAll("input[name='option']:checked")
       ).map((el) => Number(el.value));
-      correct = compareSelections(selected, question.correctIndexes);
-      expected = question.correctIndexes
-        .map((i) => question.options[i])
-        .join(", ");
+      if (selected.length === 0) {
+        showWarning("Select at least one answer.");
+        return;
+      }
+      answerPayload = { selected };
     } else if (type === "single") {
       const value = ui.quizForm.querySelector("input[name='single']:checked");
       if (!value) {
         showWarning("Select one answer.");
         return;
       }
-      selected = Number(value.value);
-      correct = selected === question.correctIndex;
-      expected = question.options[question.correctIndex];
+      answerPayload = { selected: Number(value.value) };
     } else if (type === "truefalse") {
       const value = ui.quizForm.querySelector("input[name='truefalse']:checked");
       if (!value) {
         showWarning("Select true or false.");
         return;
       }
-      selected = value.value;
-      correct = (value.value === "true") === question.correctBoolean;
-      expected = question.correctBoolean ? "True" : "False";
+      answerPayload = { selected: value.value === "true" };
     } else if (type === "matching") {
       const selections = question.pairs.map((pair, idx) => {
         const select = ui.quizForm.querySelector(`select[name='match-${idx}']`);
@@ -880,13 +1134,7 @@
         showWarning("Please select all matches.");
         return;
       }
-      selected = selections;
-      correct = selections.every(
-        (val, idx) => val === question.pairs[idx].right
-      );
-      expected = question.pairs
-        .map((pair) => `${pair.left} -> ${pair.right}`)
-        .join("; ");
+      answerPayload = { selected: selections };
     } else if (type === "fillblank") {
       const blanks = getFillBlankAnswers(question);
       const values = blanks.map((_, index) => {
@@ -897,12 +1145,7 @@
         showWarning("Please fill all blanks.");
         return;
       }
-      selected = values;
-      correct = values.every((val, idx) => {
-        const accepted = blanks[idx].map((a) => a.toLowerCase());
-        return accepted.includes(val.toLowerCase());
-      });
-      expected = blanks.map((opts) => opts.join("/")).join(" | ");
+      answerPayload = { selected: values };
     } else if (type === "guess") {
       const input = ui.quizForm.querySelector("input[name='guess']");
       const value = input ? input.value.trim() : "";
@@ -910,10 +1153,7 @@
         showWarning("Please enter an answer.");
         return;
       }
-      selected = value;
-      const accepted = question.expectedAnswers.map((a) => a.toLowerCase());
-      correct = accepted.includes(value.toLowerCase());
-      expected = question.expectedAnswers.join(", ");
+      answerPayload = { text: value };
     } else if (type === "ordering") {
       const items = question.items || [];
       const selections = items.map((_, index) => {
@@ -924,10 +1164,7 @@
         showWarning("Please select an order for all items.");
         return;
       }
-      selected = selections.map((v) => Number(v));
-      const expectedOrder = question.correct_order || [];
-      correct = selected.every((val, idx) => val === expectedOrder[idx]);
-      expected = expectedOrder.map((pos) => pos + 1).join(", ");
+      answerPayload = { selected: selections.map((v) => Number(v)) };
     } else if (type === "explain" || type === "exam") {
       const input = ui.quizForm.querySelector("textarea[name='free']");
       const value = input ? input.value.trim() : "";
@@ -935,31 +1172,107 @@
         showWarning("Please enter an answer.");
         return;
       }
-      showSelfCheck(question, timeMs);
-      return;
+      answerPayload = { text: value };
+    } else if (type === "calc_value") {
+      const value = ui.quizForm.querySelector("input[name='calc-value']");
+      const unit = ui.quizForm.querySelector("select[name='calc-unit']");
+      const rawValue = value ? value.value.trim() : "";
+      if (!rawValue) {
+        showWarning("Please enter a value.");
+        return;
+      }
+      answerPayload = { value: rawValue, unit: unit ? unit.value : "" };
+    } else if (type === "calc_multi") {
+      const payload = question.payload || {};
+      const fields = payload.fields || [];
+      const fieldMap = {};
+      for (const field of fields) {
+        const valInput = ui.quizForm.querySelector(`input[name='calc-field-${field.id}']`);
+        const unitInput = ui.quizForm.querySelector(`input[name='calc-unit-${field.id}']`);
+        const rawValue = valInput ? valInput.value.trim() : "";
+        const rawUnit = unitInput ? unitInput.value.trim() : "";
+        if (!rawValue) {
+          showWarning("Please fill all fields.");
+          return;
+        }
+        fieldMap[field.id] = { value: rawValue, unit: rawUnit };
+      }
+      answerPayload = { fields: fieldMap };
+    } else if (type === "hotspot_svg") {
+      const selected = ui.quizForm._hotspotSelected
+        ? Array.from(ui.quizForm._hotspotSelected)
+        : [];
+      if (selected.length === 0) {
+        showWarning("Select at least one hotspot.");
+        return;
+      }
+      answerPayload = { selected };
+    } else if (type === "troubleshoot_flow") {
+      const path = ui.quizForm._flowState ? ui.quizForm._flowState.path : [];
+      const finalNode = ui.quizForm._flowState ? ui.quizForm._flowState.current : null;
+      answerPayload = { path, final_node: finalNode };
     } else {
       showWarning("This question type is not implemented yet.");
       logger.warn("quiz", "submit on unimplemented type", { type });
       return;
     }
 
+    let grade;
+    try {
+      grade = await apiFetch(`/questions/${encodeURIComponent(question.id)}/grade`, {
+        method: "POST",
+        body: JSON.stringify({
+          answer: answerPayload,
+          seed: state.currentInstance ? state.currentInstance.seed : null,
+          instance_params: state.currentInstance ? state.currentInstance.params : null,
+          time_ms: timeMs
+        })
+      });
+    } catch (error) {
+      showError("Grading failed.", String(error));
+      logger.error("quiz", "grade failed", { error: String(error) });
+      return;
+    }
+
+    if (grade.status === "needs_self_grade") {
+      showSelfCheck(question, timeMs, grade.expected, grade.solution, {
+        answer: answerPayload,
+        instance_id: state.currentInstance ? state.currentInstance.id : null,
+        seed: state.currentInstance ? state.currentInstance.seed : null,
+        params: state.currentInstance ? state.currentInstance.params : null
+      });
+      return;
+    }
+
+    const correct = !!grade.correct;
     const attempt = {
       id: `att_${Date.now()}`,
       questionId: question.id,
-      selected,
+      selected: {
+        answer: answerPayload,
+        instance_id: state.currentInstance ? state.currentInstance.id : null,
+        seed: state.currentInstance ? state.currentInstance.seed : null,
+        params: state.currentInstance ? state.currentInstance.params : null
+      },
       correct,
-      graded_by_user: gradedByUser,
+      graded_by_user: false,
       timestamp: new Date().toISOString(),
       timeMs
     };
     await postAttempt(attempt);
 
-    ui.quizResult.textContent = `${correct ? "Correct" : "Incorrect"} | Expected: ${expected} | ${question.explanation} | Source: ${question.source_ref}`;
+    const solutionText = formatSolution(grade.solution);
+    ui.quizResult.innerHTML = `
+      <div>${correct ? "Correct" : "Incorrect"} | Expected: ${escapeHtml(grade.expected || "")}</div>
+      ${solutionText ? `<div class="muted">${solutionText}</div>` : ""}
+      <div class="muted">${escapeHtml(question.explanation || "")}</div>
+      <div class="muted">Source: ${escapeHtml(question.source_ref || "")}</div>
+    `;
     logger.info("quiz", "answer submitted", {
       questionId: question.id,
       type,
       correct,
-      graded_by_user: gradedByUser
+      graded_by_user: false
     });
     renderDashboard();
     updateDebugPanel();
@@ -1102,6 +1415,28 @@
 
   function refreshDataStore() {
     loadInitialData();
+  }
+
+  function hydratePackRegistry() {
+    const packs = Array.isArray(dataStore.packs) ? dataStore.packs : [];
+    if (packs.length === 0) return;
+    const pick =
+      packs.find((p) => p.id === "default_pack") ||
+      packs.find((p) => p.schema === "quiztab-questionpack-v2") ||
+      packs[0];
+    const parseField = (val, fallback) => {
+      if (!val) return fallback;
+      if (typeof val === "object") return val;
+      try {
+        return JSON.parse(val);
+      } catch {
+        return fallback;
+      }
+    };
+    dataStore.meta = parseField(pick.meta, {});
+    dataStore.settings = parseField(pick.settings, {});
+    dataStore.methods = parseField(pick.methods, []);
+    dataStore.assets = parseField(pick.assets, []);
   }
 
   // Attempts and appointments are stored on the backend.
@@ -1522,6 +1857,10 @@
       { id: "matching", name: "Matching" },
       { id: "fillblank", name: "Fill-in-the-Blank" },
       { id: "ordering", name: "Ordering" },
+      { id: "calc_value", name: "Calc (single value)" },
+      { id: "calc_multi", name: "Calc (multi-field)" },
+      { id: "hotspot_svg", name: "Hotspot (SVG)" },
+      { id: "troubleshoot_flow", name: "Troubleshoot Flow" },
       { id: "explain", name: "Explain Term" },
       { id: "guess", name: "Guess the Word" },
       { id: "exam", name: "Exam Template" },
@@ -1555,6 +1894,10 @@
       { id: "fillblank", name: "Fill-in-the-Blank" },
       { id: "matching", name: "Matching" },
       { id: "ordering", name: "Ordering" },
+      { id: "calc_value", name: "Calc (single value)" },
+      { id: "calc_multi", name: "Calc (multi-field)" },
+      { id: "hotspot_svg", name: "Hotspot (SVG)" },
+      { id: "troubleshoot_flow", name: "Troubleshoot Flow" },
       { id: "guess", name: "Guess the Word" },
       { id: "explain", name: "Explain Term" },
       { id: "exam", name: "Exam Template" }
@@ -1694,7 +2037,14 @@
       topics: {},
       types: {}
     };
-    if (!pack || pack.schema !== "ap2-questionpack-v1") {
+    if (!pack || !pack.schema) {
+      errors.push("Invalid schema.");
+      return { errors, summary, questions: [], topics: [] };
+    }
+    if (pack.schema === "quiztab-questionpack-v2") {
+      return normalizeQuiztabV2Pack(pack, errors, summary);
+    }
+    if (pack.schema !== "ap2-questionpack-v1" && pack.schema !== "ap2-questionpack-v2") {
       errors.push("Invalid schema.");
       return { errors, summary, questions: [], topics: [] };
     }
@@ -1729,6 +2079,149 @@
       }
     });
     return { errors, summary, questions: normalizedQuestions, topics: Array.from(topicMap.values()) };
+  }
+
+  function normalizeQuiztabV2Pack(pack, errors, summary) {
+    const topics = Array.isArray(pack.topics) ? pack.topics : [];
+    const questions = Array.isArray(pack.questions) ? pack.questions : [];
+    const topicMap = new Map();
+    topics.forEach((t) => {
+      if (!t.slug) {
+        errors.push("Topic missing slug.");
+        return;
+      }
+      const title = t.title || slugToTitle(t.slug);
+      topicMap.set(t.slug, {
+        id: t.slug,
+        name: title,
+        topic_area: t.topic_area || "",
+        parent_id: t.parent_topic_id || t.parent_id || null,
+        path: t.path || t.slug,
+        depth: typeof t.depth === "number" ? t.depth : 0
+      });
+    });
+    const normalizedQuestions = [];
+    questions.forEach((q) => {
+      summary.total += 1;
+      const normalized = normalizeQuiztabQuestion(q, topicMap, errors);
+      if (normalized) {
+        normalizedQuestions.push(normalized);
+        summary.valid += 1;
+        summary.types[normalized.type] = (summary.types[normalized.type] || 0) + 1;
+        summary.topics[normalized.topicId] =
+          (summary.topics[normalized.topicId] || 0) + 1;
+      } else {
+        summary.invalid += 1;
+      }
+    });
+    return {
+      errors,
+      summary,
+      questions: normalizedQuestions,
+      topics: Array.from(topicMap.values()),
+      methods: Array.isArray(pack.methods) ? pack.methods : [],
+      assets: Array.isArray(pack.assets) ? pack.assets : [],
+      settings: pack.settings || {},
+      meta: pack.meta || {}
+    };
+  }
+
+  function normalizeQuiztabQuestion(input, topicMap, errors) {
+    if (!input || !input.id || !input.method_id) {
+      errors.push("Question missing id or method_id.");
+      return null;
+    }
+    const typeMap = { guessword: "guess", explainterm: "explain" };
+    const methodId = typeMap[input.method_id] || input.method_id;
+    const topicSlug = input.topic_slug || "";
+    if (!topicSlug) {
+      errors.push(`Question ${input.id} missing topic_slug.`);
+      return null;
+    }
+    if (!topicMap.has(topicSlug)) {
+      topicMap.set(topicSlug, {
+        id: topicSlug,
+        name: slugToTitle(topicSlug),
+        topic_area: ""
+      });
+    }
+    const prompt = input.prompt;
+    if (!prompt) {
+      errors.push(`Question ${input.id} missing prompt.`);
+      return null;
+    }
+    const base = {
+      id: input.id,
+      topicId: topicSlug,
+      type: methodId,
+      method_id: methodId,
+      prompt,
+      payload: input.payload || {},
+      support: input.support || {},
+      solution: input.solution || {},
+      difficulty: input.difficulty || "",
+      variants: Array.isArray(input.variants) ? input.variants : [],
+      randomization: input.randomization || null,
+      explanation: input.explanation || "",
+      source_ref: input.source_ref || "internal:import",
+      tags: Array.isArray(input.tags) ? input.tags : []
+    };
+    const payload = base.payload || {};
+    if (base.type === "single") {
+      if (Array.isArray(payload.options)) {
+        base.options = payload.options;
+      }
+      if (Array.isArray(payload.correct)) {
+        base.correctIndex = payload.correct[0];
+      } else if (Number.isInteger(payload.correct)) {
+        base.correctIndex = payload.correct;
+      } else if (typeof payload.correct === "string" && payload.correct.trim() !== "") {
+        const parsed = Number(payload.correct);
+        if (!Number.isNaN(parsed)) base.correctIndex = parsed;
+      }
+    }
+    if (base.type === "multi") {
+      if (Array.isArray(payload.options)) {
+        base.options = payload.options;
+      }
+      if (Array.isArray(payload.correct)) {
+        base.correctIndexes = payload.correct;
+      } else if (Number.isInteger(payload.correct)) {
+        base.correctIndexes = [payload.correct];
+      } else if (typeof payload.correct === "string" && payload.correct.trim() !== "") {
+        const parsed = Number(payload.correct);
+        if (!Number.isNaN(parsed)) base.correctIndexes = [parsed];
+      }
+    }
+    if (base.type === "truefalse" && typeof payload.correct === "boolean") {
+      base.correctBoolean = payload.correct;
+    }
+    if (base.type === "fillblank" && Array.isArray(payload.blanks)) {
+      base.answers = payload.blanks;
+    }
+    if (base.type === "matching") {
+      if (Array.isArray(payload.pairs) && payload.pairs.length > 0 && payload.pairs[0].left) {
+        base.pairs = payload.pairs;
+      } else if (Array.isArray(payload.left) && Array.isArray(payload.right) && Array.isArray(payload.pairs)) {
+        base.pairs = payload.pairs
+          .map((pair) => ({ left: payload.left[pair[0]], right: payload.right[pair[1]] }))
+          .filter((pair) => pair.left && pair.right);
+      }
+    }
+    if (base.type === "ordering") {
+      base.items = payload.items || base.items;
+      base.correct_order = payload.correct_order || base.correct_order;
+    }
+    if (base.type === "guess" && Array.isArray(payload.answers)) {
+      base.expectedAnswers = payload.answers;
+    }
+    if (base.type === "explain" && payload.expectedAnswer) {
+      base.expectedAnswer = payload.expectedAnswer;
+    }
+    if (base.type === "exam" && payload.expectedAnswer) {
+      base.expectedAnswer = payload.expectedAnswer;
+    }
+    return base;
   }
 
   function normalizeQuestion(input, topicMap, errors) {
@@ -1895,6 +2388,12 @@
     lines.push(`Valid: ${result.summary.valid}, Invalid: ${result.summary.invalid}`);
     lines.push(`Types: ${JSON.stringify(result.summary.types)}`);
     lines.push(`Topics: ${JSON.stringify(result.summary.topics)}`);
+    if (result.methods) {
+      lines.push(`Methods: ${Array.isArray(result.methods) ? result.methods.length : 0}`);
+    }
+    if (result.assets) {
+      lines.push(`Assets: ${Array.isArray(result.assets) ? result.assets.length : 0}`);
+    }
     if (result.errors.length > 0) {
       lines.push(`Errors (first 5):`);
       result.errors.slice(0, 5).forEach((err) => lines.push(`- ${err}`));
@@ -2161,6 +2660,10 @@
       "fillblank",
       "matching",
       "ordering",
+      "calc_value",
+      "calc_multi",
+      "hotspot_svg",
+      "troubleshoot_flow",
       "guess",
       "explain",
       "exam"
@@ -3380,6 +3883,10 @@ Now generate the JSON question pack.`;
       matching: ["matching"],
       fillblank: ["fillblank"],
       ordering: ["ordering"],
+      calc_value: ["calc_value"],
+      calc_multi: ["calc_multi"],
+      hotspot_svg: ["hotspot_svg"],
+      troubleshoot_flow: ["troubleshoot_flow"],
       explain: ["explain"],
       guess: ["guess"],
       exam: ["exam"]
@@ -3392,6 +3899,10 @@ Now generate the JSON question pack.`;
         "matching",
         "fillblank",
         "ordering",
+        "calc_value",
+        "calc_multi",
+        "hotspot_svg",
+        "troubleshoot_flow",
         "guess",
         "explain",
         "exam"
@@ -3404,7 +3915,24 @@ Now generate the JSON question pack.`;
     return list;
   }
 
-  function showSelfCheck(question, timeMs) {
+  function formatSolution(solution) {
+    if (!solution || typeof solution !== "object") return "";
+    const parts = [];
+    if (solution.final) parts.push(`Final: ${solution.final}`);
+    if (Array.isArray(solution.steps) && solution.steps.length) {
+      parts.push(`Steps: ${solution.steps.join(" | ")}`);
+    }
+    if (Array.isArray(solution.checks) && solution.checks.length) {
+      parts.push(`Checks: ${solution.checks.join(" | ")}`);
+    }
+    if (Array.isArray(solution.common_mistakes) && solution.common_mistakes.length) {
+      parts.push(`Common mistakes: ${solution.common_mistakes.join(" | ")}`);
+    }
+    if (solution.mini_example) parts.push(`Mini example: ${solution.mini_example}`);
+    return parts.join(" | ");
+  }
+
+  function showSelfCheck(question, timeMs, expectedOverride, solutionOverride, selectedOverride) {
     ui.quizResult.innerHTML = `
       <div class="warning">Self-check required for this question type.</div>
       <div class="quiz-actions">
@@ -3412,8 +3940,9 @@ Now generate the JSON question pack.`;
         <button id="self-wrong" class="ghost" type="button">I was wrong</button>
       </div>
       <div class="muted">Expected: ${escapeHtml(
-        question.expectedAnswer || "Use your best judgement."
+        expectedOverride || question.expectedAnswer || "Use your best judgement."
       )}</div>
+      ${solutionOverride ? `<div class="muted">${escapeHtml(formatSolution(solutionOverride))}</div>` : ""}
       <div class="muted">${escapeHtml(question.explanation)}</div>
       <div class="muted">Source: ${escapeHtml(question.source_ref)}</div>
     `;
@@ -3421,7 +3950,7 @@ Now generate the JSON question pack.`;
       const attempt = {
         id: `att_${Date.now()}`,
         questionId: question.id,
-        selected: null,
+        selected: selectedOverride || null,
         correct: isCorrect,
         graded_by_user: true,
         timestamp: new Date().toISOString(),
@@ -3695,13 +4224,28 @@ Now generate the JSON question pack.`;
   async function loadInitialData() {
     try {
       const data = await apiFetch("/questions");
-      dataStore = { topics: data.topics || [], questions: data.questions || [] };
+      dataStore = {
+        topics: data.topics || [],
+        questions: data.questions || [],
+        packs: data.packs || [],
+        methods: [],
+        assets: [],
+        settings: {},
+        meta: {}
+      };
+      hydratePackRegistry();
       questionOrder = new Map(
         dataStore.questions.map((q, idx) => [q.id, idx])
       );
       await migrateLocalQuestionMutations();
       const attemptsRes = await apiFetch("/attempts");
       attempts = attemptsRes.attempts || [];
+      try {
+        state.progressSummary = await apiFetch("/progress/summary");
+      } catch (error) {
+        logger.warn("progress", "summary failed", { error: String(error) });
+        state.progressSummary = null;
+      }
       const appointmentsRes = await apiFetch("/appointments");
       appointments = appointmentsRes.appointments || [];
       renderDashboard();
@@ -3725,6 +4269,11 @@ Now generate the JSON question pack.`;
         body: JSON.stringify(attempt)
       });
       attempts.push(attempt);
+      try {
+        state.progressSummary = await apiFetch("/progress/summary");
+      } catch (error) {
+        logger.warn("progress", "summary refresh failed", { error: String(error) });
+      }
     } catch (error) {
       showError("Failed to save attempt.", String(error));
       logger.error("api", "attempt save failed", { error: String(error) });
