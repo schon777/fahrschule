@@ -33,6 +33,7 @@
     managerTopic: "all",
     managerType: "all",
     managerSearch: "",
+    managerSource: "",
     managerSort: "newest",
     managerShowSeeded: true,
     managerShowCustom: true,
@@ -107,6 +108,7 @@
     managerMeta: document.getElementById("manager-meta"),
     managerCoverage: document.getElementById("manager-coverage"),
     managerSearch: document.getElementById("manager-search"),
+    managerSource: document.getElementById("manager-source"),
     managerTopic: document.getElementById("manager-topic"),
     managerType: document.getElementById("manager-type"),
     managerSort: document.getElementById("manager-sort"),
@@ -383,6 +385,14 @@
       logger.debug("manager", "filter change", { search: state.managerSearch });
       renderManager();
     });
+    if (ui.managerSource) {
+      ui.managerSource.addEventListener("input", () => {
+        state.managerSource = ui.managerSource.value;
+        state.managerPage = 1;
+        logger.debug("manager", "filter change", { source: state.managerSource });
+        renderManager();
+      });
+    }
     ui.managerTopic.addEventListener("change", () => {
       state.managerTopic = ui.managerTopic.value;
       state.managerPage = 1;
@@ -766,6 +776,7 @@
     form.id = "quiz-form";
     form.innerHTML = `<div class="quiz-prompt">${escapeHtml(question.prompt)}</div>`;
     form.innerHTML += renderSupportPanel(question);
+    form.innerHTML += renderSourcePanel(question);
 
     const type = question.type;
     if (type === "multi") {
@@ -1023,6 +1034,17 @@
     return `<div class="support-panel">${parts.join("")}</div>`;
   }
 
+  function renderSourcePanel(question) {
+    const source = question.source_ref || "";
+    if (!source) return "";
+    return `
+      <details class="source-panel">
+        <summary>Source</summary>
+        <div class="source-body">${escapeHtml(source)}</div>
+      </details>
+    `;
+  }
+
   function renderTroubleshootFlow(form, question) {
     const payload = question.payload || {};
     const nodes = payload.nodes || [];
@@ -1181,7 +1203,13 @@
         showWarning("Please enter a value.");
         return;
       }
-      answerPayload = { value: rawValue, unit: unit ? unit.value : "" };
+      const unitValue = unit ? unit.value.trim() : "";
+      const hasInlineUnit = /[a-zA-ZΩω]/.test(rawValue);
+      if (hasInlineUnit) {
+        answerPayload = { raw: rawValue };
+      } else {
+        answerPayload = { value: rawValue, unit: unitValue };
+      }
     } else if (type === "calc_multi") {
       const payload = question.payload || {};
       const fields = payload.fields || [];
@@ -1195,7 +1223,14 @@
           showWarning("Please fill all fields.");
           return;
         }
-        fieldMap[field.id] = { value: rawValue, unit: rawUnit };
+        const hasInlineUnit = /[a-zA-ZΩω]/.test(rawValue);
+        if (hasInlineUnit) {
+          fieldMap[field.id] = { value: rawValue, unit: null };
+        } else if (rawUnit) {
+          fieldMap[field.id] = { value: rawValue, unit: rawUnit };
+        } else {
+          fieldMap[field.id] = { value: rawValue, unit: null };
+        }
       }
       answerPayload = { fields: fieldMap };
     } else if (type === "hotspot_svg") {
@@ -1235,12 +1270,19 @@
     }
 
     if (grade.status === "needs_self_grade") {
-      showSelfCheck(question, timeMs, grade.expected, grade.solution, {
-        answer: answerPayload,
-        instance_id: state.currentInstance ? state.currentInstance.id : null,
-        seed: state.currentInstance ? state.currentInstance.seed : null,
-        params: state.currentInstance ? state.currentInstance.params : null
-      });
+      showSelfCheck(
+        question,
+        timeMs,
+        grade.expected,
+        grade.solution,
+        {
+          answer: answerPayload,
+          instance_id: state.currentInstance ? state.currentInstance.id : null,
+          seed: state.currentInstance ? state.currentInstance.seed : null,
+          params: state.currentInstance ? state.currentInstance.params : null
+        },
+        grade.answer_key
+      );
       return;
     }
 
@@ -1918,6 +1960,7 @@
     if (!ui.builderDynamic) {
       return;
     }
+    let includeSelfCheck = true;
     if (type === "single" || type === "multi") {
       ui.builderDynamic.innerHTML = `
         <label>
@@ -1995,8 +2038,59 @@
           </select>
         </label>
       `;
+      includeSelfCheck = false;
+    } else if (type === "calc_value") {
+      ui.builderDynamic.innerHTML = `
+        <label>
+          Expected value
+          <input id="builder-calc-expected" type="number" step="0.01" />
+        </label>
+        <label>
+          Expected unit
+          <input id="builder-calc-unit" type="text" placeholder="A, V, ohm" />
+        </label>
+        <label>
+          Rounding decimals
+          <input id="builder-calc-rounding" type="number" min="0" value="2" />
+        </label>
+        <label>
+          Accept units (comma, optional)
+          <input id="builder-calc-accept" type="text" placeholder="A, mA" />
+        </label>
+        <label>
+          Tolerance mode
+          <select id="builder-calc-tol-mode">
+            <option value="absolute">Absolute</option>
+            <option value="relative">Relative</option>
+          </select>
+        </label>
+        <label>
+          Tolerance value (optional)
+          <input id="builder-calc-tol-value" type="number" step="0.01" />
+        </label>
+      `;
+    } else if (type === "calc_multi") {
+      ui.builderDynamic.innerHTML = `
+        <label>
+          Fields (one per line: id,label,unit,decimals)
+          <textarea id="builder-calc-fields" rows="4" placeholder="p,Power,W,2"></textarea>
+        </label>
+        <label>
+          Answers (one per line: id,value,unit)
+          <textarea id="builder-calc-answers" rows="4" placeholder="p,10,W"></textarea>
+        </label>
+      `;
     } else {
       ui.builderDynamic.innerHTML = `<div class="warning">Unknown type.</div>`;
+      includeSelfCheck = false;
+    }
+    if (includeSelfCheck) {
+      ui.builderDynamic.innerHTML += `
+        <label class="toggle">
+          <input type="checkbox" id="builder-self-check" />
+          <span>Self-check grading</span>
+        </label>
+      `;
     }
   }
 
@@ -2030,6 +2124,7 @@
 
   function validateQuestionPack(pack) {
     const errors = [];
+    const warnings = [];
     const summary = {
       total: 0,
       valid: 0,
@@ -2039,14 +2134,14 @@
     };
     if (!pack || !pack.schema) {
       errors.push("Invalid schema.");
-      return { errors, summary, questions: [], topics: [] };
+      return { errors, warnings, summary, questions: [], topics: [] };
     }
     if (pack.schema === "quiztab-questionpack-v2") {
-      return normalizeQuiztabV2Pack(pack, errors, summary);
+      return normalizeQuiztabV2Pack(pack, errors, warnings, summary);
     }
     if (pack.schema !== "ap2-questionpack-v1" && pack.schema !== "ap2-questionpack-v2") {
       errors.push("Invalid schema.");
-      return { errors, summary, questions: [], topics: [] };
+      return { errors, warnings, summary, questions: [], topics: [] };
     }
     const topics = Array.isArray(pack.topics) ? pack.topics : [];
     const questions = Array.isArray(pack.questions) ? pack.questions : [];
@@ -2078,10 +2173,227 @@
         summary.invalid += 1;
       }
     });
-    return { errors, summary, questions: normalizedQuestions, topics: Array.from(topicMap.values()) };
+    return { errors, warnings, summary, questions: normalizedQuestions, topics: Array.from(topicMap.values()) };
   }
 
-  function normalizeQuiztabV2Pack(pack, errors, summary) {
+  const METHOD_ID_MAP = {
+    1: "single",
+    2: "truefalse",
+    3: "multi",
+    4: "matching",
+    5: "fillblank",
+    6: "ordering",
+    7: "calc_value",
+    8: "calc_multi",
+    9: "hotspot_svg",
+    10: "troubleshoot_flow",
+    11: "explain",
+    12: "guess",
+    13: "exam"
+  };
+
+  const TYPE_ALIASES = { guessword: "guess", explainterm: "explain" };
+
+  function normalizeMethodId(raw) {
+    if (raw === null || raw === undefined) return null;
+    if (typeof raw === "number") {
+      return METHOD_ID_MAP[raw] || String(raw);
+    }
+    if (typeof raw === "string") {
+      const cleaned = raw.trim();
+      if (!cleaned) return null;
+      if (/^\d+$/.test(cleaned)) {
+        const mapped = METHOD_ID_MAP[Number(cleaned)];
+        return mapped || cleaned;
+      }
+      const lowered = cleaned.toLowerCase();
+      return TYPE_ALIASES[lowered] || lowered;
+    }
+    return String(raw);
+  }
+
+  function collectExtraFields(source, allowed) {
+    if (!source || typeof source !== "object") return {};
+    const extra = {};
+    Object.keys(source).forEach((key) => {
+      if (!allowed.has(key)) {
+        extra[key] = source[key];
+      }
+    });
+    return extra;
+  }
+
+  function normalizePromptText(text) {
+    if (typeof text !== "string") return "";
+    return text
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .replace(/[^a-z0-9\s]/g, "");
+  }
+
+  function bigramSet(text) {
+    const set = new Set();
+    for (let i = 0; i < text.length - 1; i += 1) {
+      set.add(text.slice(i, i + 2));
+    }
+    return set;
+  }
+
+  function textSimilarity(a, b) {
+    if (!a || !b) return 0;
+    if (a === b) return 1;
+    const aSet = bigramSet(a);
+    const bSet = bigramSet(b);
+    if (aSet.size === 0 || bSet.size === 0) return 0;
+    let shared = 0;
+    aSet.forEach((item) => {
+      if (bSet.has(item)) shared += 1;
+    });
+    return (2 * shared) / (aSet.size + bSet.size);
+  }
+
+  function validateImportedQuestion(question, errors, warnings) {
+    const type = question.type;
+    if (!type) {
+      errors.push(`Question ${question.id} missing type.`);
+      return false;
+    }
+    if (!question.topicId) {
+      errors.push(`Question ${question.id} missing topic_slug.`);
+      return false;
+    }
+    if (!question.prompt || typeof question.prompt !== "string") {
+      errors.push(`Question ${question.id} missing prompt.`);
+      return false;
+    }
+    if (type === "single") {
+      if (!Array.isArray(question.options) || question.options.length < 2) {
+        errors.push(`Single ${question.id} requires at least 2 options.`);
+        return false;
+      }
+      if (!Number.isInteger(question.correctIndex) || question.correctIndex < 0 || question.correctIndex >= question.options.length) {
+        errors.push(`Single ${question.id} has invalid correctIndex.`);
+        return false;
+      }
+      return true;
+    }
+    if (type === "multi") {
+      if (!Array.isArray(question.options) || question.options.length < 2) {
+        errors.push(`Multi ${question.id} requires at least 2 options.`);
+        return false;
+      }
+      if (!Array.isArray(question.correctIndexes) || question.correctIndexes.length < 1) {
+        errors.push(`Multi ${question.id} requires correctIndexes.`);
+        return false;
+      }
+      const unique = new Set(question.correctIndexes);
+      if (unique.size !== question.correctIndexes.length) {
+        errors.push(`Multi ${question.id} has duplicate correctIndexes.`);
+        return false;
+      }
+      if ([...unique].some((idx) => !Number.isInteger(idx) || idx < 0 || idx >= question.options.length)) {
+        errors.push(`Multi ${question.id} has out-of-range correctIndexes.`);
+        return false;
+      }
+      return true;
+    }
+    if (type === "truefalse") {
+      if (typeof question.correctBoolean !== "boolean") {
+        errors.push(`Truefalse ${question.id} requires correctBoolean.`);
+        return false;
+      }
+      return true;
+    }
+    if (type === "matching") {
+      if (!Array.isArray(question.pairs) || question.pairs.length < 2) {
+        errors.push(`Matching ${question.id} requires at least 2 pairs.`);
+        return false;
+      }
+      if (question.pairs.some((pair) => !pair.left || !pair.right)) {
+        errors.push(`Matching ${question.id} has empty pair entries.`);
+        return false;
+      }
+      return true;
+    }
+    if (type === "fillblank") {
+      const answers = question.answers || question.expectedAnswers;
+      if (!Array.isArray(answers) || answers.length === 0) {
+        errors.push(`Fillblank ${question.id} requires answers.`);
+        return false;
+      }
+      return true;
+    }
+    if (type === "ordering") {
+      if (!Array.isArray(question.items) || question.items.length < 2) {
+        errors.push(`Ordering ${question.id} requires at least 2 items.`);
+        return false;
+      }
+      if (!Array.isArray(question.correct_order) || question.correct_order.length !== question.items.length) {
+        errors.push(`Ordering ${question.id} requires correct_order permutation.`);
+        return false;
+      }
+      const unique = new Set(question.correct_order);
+      if (unique.size !== question.correct_order.length) {
+        errors.push(`Ordering ${question.id} correct_order has duplicates.`);
+        return false;
+      }
+      if ([...unique].some((idx) => !Number.isInteger(idx) || idx < 0 || idx >= question.items.length)) {
+        errors.push(`Ordering ${question.id} correct_order has invalid indices.`);
+        return false;
+      }
+      return true;
+    }
+    if (type === "guess") {
+      if (!Array.isArray(question.expectedAnswers) || question.expectedAnswers.length === 0) {
+        errors.push(`Guess ${question.id} requires expectedAnswers.`);
+        return false;
+      }
+      return true;
+    }
+    if (type === "explain" || type === "exam") {
+      if (!question.expectedAnswer || typeof question.expectedAnswer !== "string") {
+        errors.push(`${type} ${question.id} requires expectedAnswer.`);
+        return false;
+      }
+      return true;
+    }
+    if (type === "calc_value") {
+      const payload = question.payload || {};
+      if (typeof payload.expected_value !== "number") {
+        errors.push(`calc_value ${question.id} requires expected_value.`);
+        return false;
+      }
+      if (!payload.expected_unit || typeof payload.expected_unit !== "string") {
+        errors.push(`calc_value ${question.id} requires expected_unit.`);
+        return false;
+      }
+      if (!Number.isInteger(payload.rounding_decimals)) {
+        errors.push(`calc_value ${question.id} requires rounding_decimals.`);
+        return false;
+      }
+      return true;
+    }
+    if (type === "calc_multi") {
+      const payload = question.payload || {};
+      if (!Array.isArray(payload.fields) || payload.fields.length === 0) {
+        errors.push(`calc_multi ${question.id} requires fields.`);
+        return false;
+      }
+      if (!payload.answers || typeof payload.answers !== "object") {
+        errors.push(`calc_multi ${question.id} requires answers.`);
+        return false;
+      }
+      return true;
+    }
+    if (type === "hotspot_svg" || type === "troubleshoot_flow") {
+      return true;
+    }
+    warnings.push(`Unknown type ${type} for ${question.id}.`);
+    return false;
+  }
+
+  function normalizeQuiztabV2Pack(pack, errors, warnings, summary) {
     const topics = Array.isArray(pack.topics) ? pack.topics : [];
     const questions = Array.isArray(pack.questions) ? pack.questions : [];
     const topicMap = new Map();
@@ -2101,10 +2413,22 @@
       });
     });
     const normalizedQuestions = [];
+    const seenIds = new Set();
     questions.forEach((q) => {
       summary.total += 1;
-      const normalized = normalizeQuiztabQuestion(q, topicMap, errors);
-      if (normalized) {
+      if (!q || !q.id) {
+        errors.push("Question missing id.");
+        summary.invalid += 1;
+        return;
+      }
+      if (seenIds.has(q.id)) {
+        errors.push(`Duplicate question id ${q.id}.`);
+        summary.invalid += 1;
+        return;
+      }
+      seenIds.add(q.id);
+      const normalized = normalizeQuiztabQuestion(q, topicMap, errors, warnings);
+      if (normalized && validateImportedQuestion(normalized, errors, warnings)) {
         normalizedQuestions.push(normalized);
         summary.valid += 1;
         summary.types[normalized.type] = (summary.types[normalized.type] || 0) + 1;
@@ -2114,8 +2438,28 @@
         summary.invalid += 1;
       }
     });
+    const promptIndex = new Map();
+    const threshold = 0.92;
+    normalizedQuestions.forEach((q) => {
+      const key = `${q.type}::${q.topicId}`;
+      const normalized = normalizePromptText(q.prompt);
+      if (!normalized) return;
+      const list = promptIndex.get(key) || [];
+      for (const existing of list) {
+        const score = textSimilarity(normalized, existing);
+        if (score >= threshold) {
+          warnings.push(
+            `Potential duplicate prompt for type ${q.type} in topic ${q.topicId} (similarity ${score.toFixed(2)}).`
+          );
+          break;
+        }
+      }
+      list.push(normalized);
+      promptIndex.set(key, list);
+    });
     return {
       errors,
+      warnings,
       summary,
       questions: normalizedQuestions,
       topics: Array.from(topicMap.values()),
@@ -2126,15 +2470,19 @@
     };
   }
 
-  function normalizeQuiztabQuestion(input, topicMap, errors) {
-    if (!input || !input.id || !input.method_id) {
-      errors.push("Question missing id or method_id.");
+  function normalizeQuiztabQuestion(input, topicMap, errors, warnings) {
+    if (!input || !input.id) {
+      errors.push("Question missing id.");
       return null;
     }
-    const typeMap = { guessword: "guess", explainterm: "explain" };
-    const methodId = typeMap[input.method_id] || input.method_id;
+    const rawMethod = input.method_id === undefined ? input.type : input.method_id;
+    const methodId = normalizeMethodId(rawMethod);
+    if (!methodId) {
+      errors.push("Question missing method_id/type.");
+      return null;
+    }
     const topicSlug = input.topic_slug || "";
-    if (!topicSlug) {
+    if (!topicSlug || typeof topicSlug !== "string") {
       errors.push(`Question ${input.id} missing topic_slug.`);
       return null;
     }
@@ -2144,12 +2492,32 @@
         name: slugToTitle(topicSlug),
         topic_area: ""
       });
+      warnings.push(`Question ${input.id} references unknown topic '${topicSlug}', placeholder created.`);
     }
     const prompt = input.prompt;
     if (!prompt) {
       errors.push(`Question ${input.id} missing prompt.`);
       return null;
     }
+    const extra = collectExtraFields(
+      input,
+      new Set([
+        "id",
+        "topic_slug",
+        "method_id",
+        "type",
+        "difficulty",
+        "prompt",
+        "payload",
+        "support",
+        "solution",
+        "explanation",
+        "source_ref",
+        "tags",
+        "variants",
+        "randomization"
+      ])
+    );
     const base = {
       id: input.id,
       topicId: topicSlug,
@@ -2164,40 +2532,55 @@
       randomization: input.randomization || null,
       explanation: input.explanation || "",
       source_ref: input.source_ref || "internal:import",
-      tags: Array.isArray(input.tags) ? input.tags : []
+      tags: Array.isArray(input.tags) ? input.tags : [],
+      extra
     };
     const payload = base.payload || {};
     if (base.type === "single") {
-      if (Array.isArray(payload.options)) {
-        base.options = payload.options;
-      }
-      if (Array.isArray(payload.correct)) {
-        base.correctIndex = payload.correct[0];
-      } else if (Number.isInteger(payload.correct)) {
-        base.correctIndex = payload.correct;
-      } else if (typeof payload.correct === "string" && payload.correct.trim() !== "") {
-        const parsed = Number(payload.correct);
+      const options = Array.isArray(payload.options) ? payload.options : input.options;
+      const correctRaw =
+        payload.correct !== undefined
+          ? payload.correct
+          : payload.correctIndexes !== undefined
+            ? payload.correctIndexes
+            : input.correct;
+      if (Array.isArray(options)) base.options = options;
+      if (Array.isArray(correctRaw)) {
+        base.correctIndex = Number(correctRaw[0]);
+      } else if (Number.isInteger(correctRaw)) {
+        base.correctIndex = correctRaw;
+      } else if (typeof correctRaw === "string" && correctRaw.trim() !== "") {
+        const parsed = Number(correctRaw);
         if (!Number.isNaN(parsed)) base.correctIndex = parsed;
       }
     }
     if (base.type === "multi") {
-      if (Array.isArray(payload.options)) {
-        base.options = payload.options;
-      }
-      if (Array.isArray(payload.correct)) {
-        base.correctIndexes = payload.correct;
-      } else if (Number.isInteger(payload.correct)) {
-        base.correctIndexes = [payload.correct];
-      } else if (typeof payload.correct === "string" && payload.correct.trim() !== "") {
-        const parsed = Number(payload.correct);
+      const options = Array.isArray(payload.options) ? payload.options : input.options;
+      const correctRaw =
+        payload.correct !== undefined
+          ? payload.correct
+          : payload.correctIndexes !== undefined
+            ? payload.correctIndexes
+            : input.correct;
+      if (Array.isArray(options)) base.options = options;
+      if (Array.isArray(correctRaw)) {
+        base.correctIndexes = correctRaw.map((val) => Number(val)).filter((val) => !Number.isNaN(val));
+      } else if (Number.isInteger(correctRaw)) {
+        base.correctIndexes = [correctRaw];
+      } else if (typeof correctRaw === "string" && correctRaw.trim() !== "") {
+        const parsed = Number(correctRaw);
         if (!Number.isNaN(parsed)) base.correctIndexes = [parsed];
       }
     }
-    if (base.type === "truefalse" && typeof payload.correct === "boolean") {
-      base.correctBoolean = payload.correct;
+    if (base.type === "truefalse") {
+      const tfVal = payload.correct !== undefined ? payload.correct : input.correct;
+      if (typeof tfVal === "boolean") {
+        base.correctBoolean = tfVal;
+      }
     }
-    if (base.type === "fillblank" && Array.isArray(payload.blanks)) {
-      base.answers = payload.blanks;
+    if (base.type === "fillblank") {
+      const blanks = payload.blanks || input.answers || input.expectedAnswers;
+      if (Array.isArray(blanks)) base.answers = blanks;
     }
     if (base.type === "matching") {
       if (Array.isArray(payload.pairs) && payload.pairs.length > 0 && payload.pairs[0].left) {
@@ -2206,20 +2589,27 @@
         base.pairs = payload.pairs
           .map((pair) => ({ left: payload.left[pair[0]], right: payload.right[pair[1]] }))
           .filter((pair) => pair.left && pair.right);
+      } else if (Array.isArray(input.left) && Array.isArray(input.right) && Array.isArray(input.pairs)) {
+        base.pairs = input.pairs
+          .map((pair) => ({ left: input.left[pair[0]], right: input.right[pair[1]] }))
+          .filter((pair) => pair.left && pair.right);
       }
     }
     if (base.type === "ordering") {
-      base.items = payload.items || base.items;
-      base.correct_order = payload.correct_order || base.correct_order;
+      base.items = payload.items || input.items || base.items;
+      base.correct_order = payload.correct_order || input.correct_order || base.correct_order;
     }
     if (base.type === "guess" && Array.isArray(payload.answers)) {
       base.expectedAnswers = payload.answers;
     }
-    if (base.type === "explain" && payload.expectedAnswer) {
-      base.expectedAnswer = payload.expectedAnswer;
+    if (base.type === "guess" && Array.isArray(input.answers)) {
+      base.expectedAnswers = input.answers;
     }
-    if (base.type === "exam" && payload.expectedAnswer) {
-      base.expectedAnswer = payload.expectedAnswer;
+    if (base.type === "explain" && (payload.expectedAnswer || input.expectedAnswer)) {
+      base.expectedAnswer = payload.expectedAnswer || input.expectedAnswer;
+    }
+    if (base.type === "exam" && (payload.expectedAnswer || input.expectedAnswer)) {
+      base.expectedAnswer = payload.expectedAnswer || input.expectedAnswer;
     }
     return base;
   }
@@ -2398,6 +2788,10 @@
       lines.push(`Errors (first 5):`);
       result.errors.slice(0, 5).forEach((err) => lines.push(`- ${err}`));
     }
+    if (result.warnings && result.warnings.length > 0) {
+      lines.push(`Warnings (first 5):`);
+      result.warnings.slice(0, 5).forEach((warn) => lines.push(`- ${warn}`));
+    }
     return lines.join("\n");
   }
 
@@ -2570,6 +2964,9 @@
   function renderManagerControls() {
     if (!ui.managerTopic) return;
     ui.managerSearch.value = state.managerSearch;
+    if (ui.managerSource) {
+      ui.managerSource.value = state.managerSource;
+    }
     const sortedTopics = getSortedTopics();
     const topicOptions = [
       `<option value="all">All topics</option>`,
@@ -2694,6 +3091,12 @@
           String(tags).toLowerCase().includes(query)
         );
       });
+    }
+    const sourceQuery = state.managerSource.trim().toLowerCase();
+    if (sourceQuery) {
+      list = list.filter((q) =>
+        String(q.source_ref || "").toLowerCase().includes(sourceQuery)
+      );
     }
     if (state.managerSort === "difficulty") {
       list.sort((a, b) => getDifficultyValue(b) - getDifficultyValue(a));
@@ -3647,6 +4050,13 @@ Now generate the JSON question pack.`;
 
   function buildQuestionFromBuilder(base) {
     const type = base.type;
+    const selfCheck = !!(document.getElementById("builder-self-check") || {}).checked;
+    const applySelfCheck = (payload) => {
+      if (selfCheck) {
+        payload.grading_mode = "self";
+      }
+      return payload;
+    };
     if (type === "single" || type === "multi") {
       const options = getLines("builder-options");
       const correct = getCommaNumbers("builder-correct");
@@ -3655,13 +4065,16 @@ Now generate the JSON question pack.`;
         return null;
       }
       if (type === "single") {
-        return { ...base, options, correctIndex: correct[0] };
+        const payload = applySelfCheck({});
+        return { ...base, options, correctIndex: correct[0], payload };
       }
-      return { ...base, options, correctIndexes: correct };
+      const payload = applySelfCheck({});
+      return { ...base, options, correctIndexes: correct, payload };
     }
     if (type === "truefalse") {
       const val = document.getElementById("builder-correct-boolean").value === "true";
-      return { ...base, correctBoolean: val };
+      const payload = applySelfCheck({});
+      return { ...base, correctBoolean: val, payload };
     }
     if (type === "fillblank") {
       const lines = getLines("builder-answers");
@@ -3672,7 +4085,8 @@ Now generate the JSON question pack.`;
         setBuilderStatus("Answers required.", true);
         return null;
       }
-      return { ...base, answers };
+      const payload = applySelfCheck({});
+      return { ...base, answers, payload };
     }
     if (type === "matching") {
       const left = getLines("builder-left");
@@ -3694,7 +4108,8 @@ Now generate the JSON question pack.`;
         setBuilderStatus("Pairs required when lengths differ.", true);
         return null;
       }
-      return { ...base, pairs };
+      const payload = applySelfCheck({});
+      return { ...base, pairs, payload };
     }
     if (type === "ordering") {
       const items = getLines("builder-items");
@@ -3703,7 +4118,8 @@ Now generate the JSON question pack.`;
         setBuilderStatus("Items and correct order required.", true);
         return null;
       }
-      return { ...base, items, correct_order: correctOrder };
+      const payload = applySelfCheck({});
+      return { ...base, items, correct_order: correctOrder, payload };
     }
     if (type === "guess") {
       const answers = getCommaStrings("builder-answers");
@@ -3711,14 +4127,72 @@ Now generate the JSON question pack.`;
         setBuilderStatus("Answers required.", true);
         return null;
       }
-      return { ...base, expectedAnswers: answers };
+      const payload = applySelfCheck({});
+      return { ...base, expectedAnswers: answers, payload };
     }
     if (type === "explain") {
       const keywords = getCommaStrings("builder-keywords");
-      return { ...base, expectedAnswer: keywords.join(", ") };
+      const payload = applySelfCheck({});
+      return { ...base, expectedAnswer: keywords.join(", "), payload };
     }
     if (type === "exam") {
-      return { ...base, expectedAnswer: "" };
+      return { ...base, expectedAnswer: "", payload: { grading_mode: "self" } };
+    }
+    if (type === "calc_value") {
+      const expected = Number(document.getElementById("builder-calc-expected").value);
+      const unit = document.getElementById("builder-calc-unit").value.trim();
+      const rounding = Number(document.getElementById("builder-calc-rounding").value || 0);
+      if (!Number.isFinite(expected) || !unit || !Number.isInteger(rounding)) {
+        setBuilderStatus("Expected value, unit, and rounding decimals are required.", true);
+        return null;
+      }
+      const acceptRaw = document.getElementById("builder-calc-accept").value;
+      const tolMode = document.getElementById("builder-calc-tol-mode").value;
+      const tolValueRaw = document.getElementById("builder-calc-tol-value").value;
+      const payload = applySelfCheck({
+        expected_value: expected,
+        expected_unit: unit,
+        rounding_decimals: rounding
+      });
+      if (acceptRaw.trim()) {
+        payload.accept_units = acceptRaw.split(",").map((v) => v.trim()).filter(Boolean);
+      }
+      if (tolValueRaw.trim()) {
+        const tolValue = Number(tolValueRaw);
+        if (Number.isFinite(tolValue)) {
+          payload.tolerance = { mode: tolMode || "absolute", value: tolValue };
+        }
+      }
+      return { ...base, payload };
+    }
+    if (type === "calc_multi") {
+      const fieldLines = getLines("builder-calc-fields");
+      const answerLines = getLines("builder-calc-answers");
+      if (fieldLines.length === 0 || answerLines.length === 0) {
+        setBuilderStatus("Fields and answers are required.", true);
+        return null;
+      }
+      const fields = fieldLines.map((line) => {
+        const parts = line.split(",").map((v) => v.trim());
+        const decimalsRaw = Number(parts[3] || 2);
+        return {
+          id: parts[0],
+          label: parts[1] || parts[0],
+          unit: parts[2] || "",
+          decimals: Number.isFinite(decimalsRaw) ? decimalsRaw : 2
+        };
+      }).filter((f) => f.id);
+      const answers = {};
+      answerLines.forEach((line) => {
+        const parts = line.split(",").map((v) => v.trim());
+        if (!parts[0]) return;
+        answers[parts[0]] = {
+          value: Number(parts[1]),
+          unit: parts[2] || ""
+        };
+      });
+      const payload = applySelfCheck({ fields, answers });
+      return { ...base, payload };
     }
     setBuilderStatus("Unknown type.", true);
     return null;
@@ -3932,16 +4406,33 @@ Now generate the JSON question pack.`;
     return parts.join(" | ");
   }
 
-  function showSelfCheck(question, timeMs, expectedOverride, solutionOverride, selectedOverride) {
+  function formatAnswerKey(answerKey) {
+    if (!answerKey) return "";
+    if (typeof answerKey === "string") {
+      return `<div>${escapeHtml(answerKey)}</div>`;
+    }
+    return `<pre class="source-pre">${escapeHtml(JSON.stringify(answerKey, null, 2))}</pre>`;
+  }
+
+  function showSelfCheck(question, timeMs, expectedOverride, solutionOverride, selectedOverride, answerKeyOverride) {
+    let expectedHtml = "";
+    if (answerKeyOverride) {
+      expectedHtml = formatAnswerKey(answerKeyOverride);
+    } else if (expectedOverride && typeof expectedOverride === "object") {
+      expectedHtml = formatAnswerKey(expectedOverride);
+    } else {
+      expectedHtml = `<div>${escapeHtml(
+        expectedOverride || question.expectedAnswer || "Use your best judgement."
+      )}</div>`;
+    }
     ui.quizResult.innerHTML = `
       <div class="warning">Self-check required for this question type.</div>
       <div class="quiz-actions">
         <button id="self-correct" class="primary" type="button">I was correct</button>
         <button id="self-wrong" class="ghost" type="button">I was wrong</button>
       </div>
-      <div class="muted">Expected: ${escapeHtml(
-        expectedOverride || question.expectedAnswer || "Use your best judgement."
-      )}</div>
+      <div class="muted">Expected:</div>
+      <div class="muted">${expectedHtml}</div>
       ${solutionOverride ? `<div class="muted">${escapeHtml(formatSolution(solutionOverride))}</div>` : ""}
       <div class="muted">${escapeHtml(question.explanation)}</div>
       <div class="muted">Source: ${escapeHtml(question.source_ref)}</div>

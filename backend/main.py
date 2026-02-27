@@ -1,4 +1,5 @@
-﻿import base64
+import base64
+import difflib
 import hashlib
 import json
 import os
@@ -126,12 +127,15 @@ def build_topic_map(topics_input, errors):
         slug = t.get("slug") or t.get("id") or t.get("topic_id")
         if slug:
             parent_id = t.get("parent_topic_id") or t.get("parent_id")
+            path = t.get("path")
+            if not parent_id and isinstance(path, str) and "/" in path:
+                parent_id = path.rsplit("/", 1)[0]
             topic_map[slug] = {
                 "id": slug,
                 "name": t.get("title") or t.get("name") or slug_to_title(slug),
                 "topic_area": t.get("topic_area", ""),
                 "parent_id": parent_id,
-                "path": t.get("path"),
+                "path": path,
                 "depth": t.get("depth"),
             }
         else:
@@ -230,16 +234,58 @@ def upsert_pack(conn, pack_id, pack):
 def safe_list(value):
     return value if isinstance(value, list) else []
 
+METHOD_ID_MAP = {
+    1: "single",
+    2: "truefalse",
+    3: "multi",
+    4: "matching",
+    5: "fillblank",
+    6: "ordering",
+    7: "calc_value",
+    8: "calc_multi",
+    9: "hotspot_svg",
+    10: "troubleshoot_flow",
+    11: "explain",
+    12: "guess",
+    13: "exam",
+}
 
-def normalize_quiztab_question(input_q, topic_map, errors, pack_id):
-    if not input_q or "id" not in input_q or "method_id" not in input_q:
-        errors.append("Quiztab question missing id or method_id.")
+TYPE_ALIASES = {"guessword": "guess", "explainterm": "explain"}
+
+
+def normalize_method_id(raw):
+    if raw is None:
+        return None
+    if isinstance(raw, int):
+        return METHOD_ID_MAP.get(raw, raw)
+    if isinstance(raw, str):
+        cleaned = raw.strip()
+        if cleaned.isdigit():
+            return METHOD_ID_MAP.get(int(cleaned), cleaned)
+        lowered = cleaned.lower()
+        return TYPE_ALIASES.get(lowered, lowered)
+    return raw
+
+
+def collect_extra_fields(source, allowed):
+    if not isinstance(source, dict):
+        return {}
+    return {k: v for k, v in source.items() if k not in allowed}
+
+
+def normalize_quiztab_question(input_q, topic_map, errors, warnings, pack_id):
+    if not input_q or "id" not in input_q:
+        errors.append("Quiztab question missing id.")
         return None
     method_id_raw = input_q.get("method_id")
-    type_map = {"guessword": "guess", "explainterm": "explain"}
-    method_id = type_map.get(method_id_raw, method_id_raw)
+    if method_id_raw is None:
+        method_id_raw = input_q.get("type")
+    method_id = normalize_method_id(method_id_raw)
+    if not method_id:
+        errors.append("Quiztab question missing method_id/type.")
+        return None
     topic_slug = input_q.get("topic_slug")
-    if not topic_slug:
+    if not isinstance(topic_slug, str) or not topic_slug.strip():
         errors.append(f"Question {input_q['id']} missing topic_slug.")
         return None
     if topic_slug not in topic_map:
@@ -248,6 +294,7 @@ def normalize_quiztab_question(input_q, topic_map, errors, pack_id):
             "name": slug_to_title(topic_slug),
             "topic_area": "",
         }
+        warnings.append(f"Question {input_q['id']} references unknown topic '{topic_slug}', placeholder created.")
     prompt = input_q.get("prompt")
     if not prompt:
         errors.append(f"Question {input_q['id']} missing prompt.")
@@ -256,6 +303,25 @@ def normalize_quiztab_question(input_q, topic_map, errors, pack_id):
     payload = input_q.get("payload") if isinstance(input_q.get("payload"), dict) else {}
     support = input_q.get("support") if isinstance(input_q.get("support"), dict) else {}
     solution = input_q.get("solution") if isinstance(input_q.get("solution"), dict) else {}
+
+    extra = collect_extra_fields(
+        input_q,
+        {
+            "id",
+            "topic_slug",
+            "method_id",
+            "type",
+            "difficulty",
+            "prompt",
+            "payload",
+            "support",
+            "solution",
+            "source_ref",
+            "tags",
+            "variants",
+            "randomization",
+        },
+    )
 
     base = {
         "id": input_q["id"],
@@ -272,6 +338,7 @@ def normalize_quiztab_question(input_q, topic_map, errors, pack_id):
         "source_ref": input_q.get("source_ref", "internal:import"),
         "tags": safe_list(input_q.get("tags")),
         "pack_id": pack_id,
+        "extra": extra,
     }
 
     # Legacy compatibility for existing renderer/logic.
@@ -386,6 +453,8 @@ UNIT_TABLE = {
     "v": ("v", 1.0),
     "mv": ("v", 0.001),
     "ohm": ("ohm", 1.0),
+    "?": ("ohm", 1.0),
+    "O": ("ohm", 1.0),
 }
 
 
@@ -397,7 +466,7 @@ def parse_value_unit(value, unit):
             value, unit = parts[0], parts[1]
             raw_unit = unit
         else:
-            match = re.match(r"^([0-9\.,]+)\s*([a-zA-Z]+)$", value.strip())
+            match = re.match(r"^([0-9\.,]+)\s*([a-zA-ZΩω]+)$", value.strip())
             if match:
                 value, unit = match.group(1), match.group(2)
                 raw_unit = unit
@@ -406,7 +475,8 @@ def parse_value_unit(value, unit):
         return None, None, raw_unit, "Invalid number"
     if not unit:
         return num, None, raw_unit, None
-    key = str(unit).strip().lower()
+    key = str(unit).strip()
+    key = key.replace("O", "ohm").replace("?", "ohm").lower()
     if key not in UNIT_TABLE:
         return num, None, raw_unit, "Unknown unit"
     base_unit, factor = UNIT_TABLE[key]
@@ -423,10 +493,13 @@ def round_value(value, decimals):
 def validate_calc_value_payload(payload):
     expected = payload.get("expected_value")
     unit = payload.get("expected_unit")
+    rounding = payload.get("rounding_decimals")
     if not isinstance(expected, (int, float)):
         return False, "calc_value requires expected_value"
     if not isinstance(unit, str) or not unit:
         return False, "calc_value requires expected_unit"
+    if not isinstance(rounding, int):
+        return False, "calc_value requires rounding_decimals"
     return True, ""
 
 
@@ -1580,6 +1653,135 @@ def validate_question_data(question):
         return
 
 
+def normalize_prompt_text(text):
+    if not isinstance(text, str):
+        return ""
+    lowered = text.strip().lower()
+    lowered = re.sub(r"\s+", " ", lowered)
+    lowered = re.sub(r"[^a-z0-9\s]", "", lowered)
+    return lowered
+
+
+def validate_import_question(question, errors, warnings):
+    q_type = question.get("type")
+    if not q_type:
+        errors.append(f"Question {question.get('id')} missing type.")
+        return False
+    if not isinstance(question.get("topicId"), str) or not question.get("topicId"):
+        errors.append(f"Question {question.get('id')} missing topic_slug.")
+        return False
+    if not isinstance(question.get("prompt"), str) or not question.get("prompt").strip():
+        errors.append(f"Question {question.get('id')} missing prompt.")
+        return False
+    if q_type == "single":
+        options = question.get("options")
+        correct = question.get("correctIndex")
+        if not isinstance(options, list) or len(options) < 2:
+            errors.append(f"Single {question.get('id')} requires at least 2 options.")
+            return False
+        if not isinstance(correct, int) or correct < 0 or correct >= len(options):
+            errors.append(f"Single {question.get('id')} requires valid correctIndex.")
+            return False
+        return True
+    if q_type == "multi":
+        options = question.get("options")
+        correct = question.get("correctIndexes")
+        if not isinstance(options, list) or len(options) < 2:
+            errors.append(f"Multi {question.get('id')} requires at least 2 options.")
+            return False
+        if not isinstance(correct, list) or len(correct) < 1:
+            errors.append(f"Multi {question.get('id')} requires correctIndexes.")
+            return False
+        if len(set(correct)) != len(correct):
+            errors.append(f"Multi {question.get('id')} has duplicate correctIndexes.")
+            return False
+        if any((not isinstance(idx, int) or idx < 0 or idx >= len(options)) for idx in correct):
+            errors.append(f"Multi {question.get('id')} has out-of-range correctIndexes.")
+            return False
+        return True
+    if q_type == "truefalse":
+        if not isinstance(question.get("correctBoolean"), bool):
+            errors.append(f"Truefalse {question.get('id')} requires correctBoolean.")
+            return False
+        return True
+    if q_type == "matching":
+        pairs = question.get("pairs")
+        if not isinstance(pairs, list) or len(pairs) < 2:
+            errors.append(f"Matching {question.get('id')} requires at least 2 pairs.")
+            return False
+        for pair in pairs:
+            if not pair.get("left") or not pair.get("right"):
+                errors.append(f"Matching {question.get('id')} has empty pair entries.")
+                return False
+        return True
+    if q_type == "fillblank":
+        answers = question.get("answers") or question.get("expectedAnswers")
+        if not isinstance(answers, list) or len(answers) == 0:
+            errors.append(f"Fillblank {question.get('id')} requires answers.")
+            return False
+        return True
+    if q_type == "ordering":
+        items = question.get("items")
+        correct = question.get("correct_order")
+        if not isinstance(items, list) or len(items) < 2:
+            errors.append(f"Ordering {question.get('id')} requires at least 2 items.")
+            return False
+        if not isinstance(correct, list) or len(correct) != len(items):
+            errors.append(f"Ordering {question.get('id')} requires correct_order permutation.")
+            return False
+        if len(set(correct)) != len(correct):
+            errors.append(f"Ordering {question.get('id')} correct_order has duplicates.")
+            return False
+        if any((not isinstance(idx, int) or idx < 0 or idx >= len(items)) for idx in correct):
+            errors.append(f"Ordering {question.get('id')} correct_order has invalid indices.")
+            return False
+        return True
+    if q_type == "guess":
+        answers = question.get("expectedAnswers")
+        if not isinstance(answers, list) or len(answers) == 0:
+            errors.append(f"Guess {question.get('id')} requires expectedAnswers.")
+            return False
+        return True
+    if q_type == "explain":
+        expected = question.get("expectedAnswer")
+        if not isinstance(expected, str) or not expected.strip():
+            errors.append(f"Explain {question.get('id')} requires expectedAnswer.")
+            return False
+        return True
+    if q_type == "exam":
+        expected = question.get("expectedAnswer")
+        if not isinstance(expected, str) or not expected.strip():
+            errors.append(f"Exam {question.get('id')} requires expectedAnswer.")
+            return False
+        return True
+    if q_type == "calc_value":
+        ok, msg = validate_calc_value_payload(question.get("payload", {}))
+        if not ok:
+            errors.append(f"calc_value {question.get('id')} invalid: {msg}.")
+            return False
+        return True
+    if q_type == "calc_multi":
+        ok, msg = validate_calc_multi_payload(question.get("payload", {}))
+        if not ok:
+            errors.append(f"calc_multi {question.get('id')} invalid: {msg}.")
+            return False
+        return True
+    if q_type == "hotspot_svg":
+        ok, msg = validate_hotspot_payload(question.get("payload", {}))
+        if not ok:
+            errors.append(f"hotspot_svg {question.get('id')} invalid: {msg}.")
+            return False
+        return True
+    if q_type == "troubleshoot_flow":
+        ok, msg = validate_troubleshoot_payload(question.get("payload", {}))
+        if not ok:
+            errors.append(f"troubleshoot_flow {question.get('id')} invalid: {msg}.")
+            return False
+        return True
+    warnings.append(f"Unknown question type {q_type} for {question.get('id')}.")
+    return False
+
+
 def get_question_record(conn, question_id):
     cur = conn.cursor()
     cur.execute("SELECT * FROM questions WHERE id = ?", (question_id,))
@@ -1616,15 +1818,22 @@ def grade_question(question, answer):
         return True, correct, expected, None
     if q_type == "matching":
         selected = answer.get("selected") or []
-        correct = True
         pairs = question.get("pairs") or []
-        if len(selected) != len(pairs):
-            correct = False
+        expected_pairs = {(p.get("left"), p.get("right")) for p in pairs if p.get("left") and p.get("right")}
+        selected_pairs = set()
+        if selected and isinstance(selected[0], dict):
+            for pair in selected:
+                left = pair.get("left")
+                right = pair.get("right")
+                if left and right:
+                    selected_pairs.add((left, right))
         else:
-            for idx, pair in enumerate(pairs):
-                if selected[idx] != pair.get("right"):
-                    correct = False
-                    break
+            if len(selected) != len(pairs):
+                selected_pairs = set()
+            else:
+                for idx, pair in enumerate(pairs):
+                    selected_pairs.add((pair.get("left"), selected[idx]))
+        correct = selected_pairs == expected_pairs
         expected = "; ".join([f"{p['left']} -> {p['right']}" for p in pairs])
         return True, correct, expected, None
     if q_type == "ordering":
@@ -1645,10 +1854,11 @@ def grade_question(question, answer):
             accepted = blanks[idx]
             if not isinstance(accepted, list):
                 accepted = [accepted]
+            norm_val = str(val).strip()
             if case_sensitive:
-                ok = val in accepted
+                ok = norm_val in [str(a).strip() for a in accepted]
             else:
-                ok = str(val).lower() in [str(a).lower() for a in accepted]
+                ok = norm_val.lower() in [str(a).strip().lower() for a in accepted]
             if not ok:
                 correct = False
                 break
@@ -1659,7 +1869,8 @@ def grade_question(question, answer):
     if q_type == "guess":
         value = answer.get("text", "")
         accepted = question.get("expectedAnswers") or []
-        correct = str(value).lower() in [str(a).lower() for a in accepted]
+        norm_val = str(value).strip().lower()
+        correct = norm_val in [str(a).strip().lower() for a in accepted]
         expected = ", ".join([str(a) for a in accepted])
         return True, correct, expected, None
     if q_type in ("explain", "exam"):
@@ -1670,12 +1881,20 @@ def grade_question(question, answer):
         expected_unit = payload.get("expected_unit")
         accept_units = payload.get("accept_units") or [expected_unit]
         rounding = payload.get("rounding_decimals", 2)
-        tol = payload.get("tolerance") or {"mode": "absolute", "value": 0}
+        tol = payload.get("tolerance")
+        if tol is None:
+            try:
+                tol = {"mode": "absolute", "value": 0.5 * (10 ** (-int(rounding)))}
+            except (TypeError, ValueError):
+                tol = {"mode": "absolute", "value": 0}
         if "raw" in answer:
             user_value, user_unit, raw_unit, err = parse_value_unit(answer.get("raw"), None)
         else:
+            unit_val = answer.get("unit")
+            if isinstance(unit_val, str) and not unit_val.strip():
+                unit_val = None
             user_value, user_unit, raw_unit, err = parse_value_unit(
-                answer.get("value"), answer.get("unit")
+                answer.get("value"), unit_val
             )
         if err:
             return True, False, "Invalid value/unit", err
@@ -1688,7 +1907,6 @@ def grade_question(question, answer):
             allowed_units = [str(u).lower() for u in accept_units if u]
             if str(raw_unit).lower() not in allowed_units:
                 return True, False, "Unit not accepted", "Unit not accepted"
-            return True, False, "Unit not accepted", "Unit not accepted"
         if expected_unit_base and user_unit and expected_unit_base != user_unit:
             return True, False, "Wrong unit", "Wrong unit"
         user_value = round_value(user_value, rounding)
@@ -1702,36 +1920,55 @@ def grade_question(question, answer):
             allowed = tol_val
         correct = diff <= allowed
         expected = f"{expected_base} {expected_unit}"
-        return True, correct, expected, None
+        debug = {
+            "user_value": user_value,
+            "expected_value": expected_base,
+            "tolerance": tol,
+            "unit": expected_unit,
+        }
+        return True, correct, expected, debug
     if q_type == "calc_multi":
         fields = payload.get("fields") or []
         answers = payload.get("answers") or {}
         input_fields = answer.get("fields") or {}
         all_correct = True
+        field_results = {}
         for field in fields:
             fid = field.get("id")
             expected = answers.get(fid)
             if fid not in input_fields or expected is None:
                 all_correct = False
+                field_results[fid] = {"correct": False, "error": "Missing field"}
                 continue
             user = input_fields.get(fid, {})
+            user_unit = user.get("unit")
+            if isinstance(user_unit, str) and not user_unit.strip():
+                user_unit = None
             user_value, user_unit, raw_unit, err = parse_value_unit(
-                user.get("value"), user.get("unit")
+                user.get("value"), user_unit
             )
             if err:
                 all_correct = False
+                field_results[fid] = {"correct": False, "error": err}
                 continue
             expected_value, expected_unit, _, err2 = parse_value_unit(
                 expected.get("value"), expected.get("unit")
             )
             if err2:
                 all_correct = False
+                field_results[fid] = {"correct": False, "error": err2}
                 continue
             if expected_unit and user_unit and expected_unit != user_unit:
                 all_correct = False
+                field_results[fid] = {"correct": False, "error": "Wrong unit"}
                 continue
             decimals = field.get("decimals", 2)
-            tol = field.get("tolerance") or {"mode": "absolute", "value": 0}
+            tol = field.get("tolerance")
+            if tol is None:
+                try:
+                    tol = {"mode": "absolute", "value": 0.5 * (10 ** (-int(decimals)))}
+                except (TypeError, ValueError):
+                    tol = {"mode": "absolute", "value": 0}
             user_value = round_value(user_value, decimals)
             expected_value = round_value(expected_value, decimals)
             diff = abs(user_value - expected_value)
@@ -1741,10 +1978,19 @@ def grade_question(question, answer):
                 allowed = abs(expected_value) * tol_val
             else:
                 allowed = tol_val
-            if diff > allowed:
+            is_correct = diff <= allowed
+            if not is_correct:
                 all_correct = False
+            field_results[fid] = {
+                "correct": is_correct,
+                "user_value": user_value,
+                "expected_value": expected_value,
+                "expected_unit": expected.get("unit"),
+                "tolerance": tol,
+            }
         expected_text = ", ".join([f"{k}: {v.get('value')} {v.get('unit','')}".strip() for k, v in answers.items()])
-        return True, all_correct, expected_text, None
+        debug = {"field_results": field_results}
+        return True, all_correct, expected_text, debug
     if q_type == "hotspot_svg":
         correct = compare_set(answer.get("selected") or [], payload.get("correct") or [])
         expected = ", ".join([str(x) for x in payload.get("correct") or []])
@@ -1757,8 +2003,56 @@ def grade_question(question, answer):
     return True, False, "Unknown type", "Unknown type"
 
 
+def build_answer_key(question):
+    q_type = question.get("type")
+    payload = question.get("payload", {})
+    if q_type in ("explain", "exam"):
+        return {"expectedAnswer": question.get("expectedAnswer") or payload.get("expectedAnswer")}
+    if q_type == "calc_value":
+        return {
+            "expected_value": payload.get("expected_value"),
+            "expected_unit": payload.get("expected_unit"),
+            "rounding_decimals": payload.get("rounding_decimals"),
+            "tolerance": payload.get("tolerance"),
+        }
+    if q_type == "calc_multi":
+        return {
+            "fields": payload.get("fields"),
+            "answers": payload.get("answers"),
+        }
+    if q_type == "single":
+        return {"correctIndex": question.get("correctIndex"), "options": question.get("options")}
+    if q_type == "multi":
+        return {"correctIndexes": question.get("correctIndexes"), "options": question.get("options")}
+    if q_type == "truefalse":
+        return {"correctBoolean": question.get("correctBoolean")}
+    if q_type == "fillblank":
+        return {"answers": question.get("answers") or question.get("expectedAnswers")}
+    if q_type == "matching":
+        return {"pairs": question.get("pairs")}
+    if q_type == "ordering":
+        return {"items": question.get("items"), "correct_order": question.get("correct_order")}
+    if q_type == "guess":
+        return {"expectedAnswers": question.get("expectedAnswers")}
+    return None
+
+
+def format_answer_key(answer_key):
+    if answer_key is None:
+        return ""
+    if isinstance(answer_key, str):
+        return answer_key
+    try:
+        return json.dumps(answer_key, ensure_ascii=True)
+    except Exception:
+        return str(answer_key)
+
+
 def import_quiztab_v2(pack, replace_duplicates):
     errors = []
+    warnings = []
+    if pack.get("schema") != "quiztab-questionpack-v2":
+        raise HTTPException(status_code=400, detail="Invalid quiztab schema")
     topics_input = pack.get("topics", [])
     questions_input = pack.get("questions", [])
     if not isinstance(topics_input, list) or not isinstance(questions_input, list):
@@ -1769,11 +2063,21 @@ def import_quiztab_v2(pack, replace_duplicates):
 
     normalized = []
     summary = {"total": 0, "valid": 0, "invalid": 0, "types": {}, "topics": {}}
+    seen_ids = set()
     for q in questions_input:
         summary["total"] += 1
-        nq = normalize_quiztab_question(q, topic_map, errors, pack_id)
-        if nq:
-            validate_question_data(nq)
+        qid = q.get("id")
+        if not qid:
+            errors.append("Question missing id.")
+            summary["invalid"] += 1
+            continue
+        if qid in seen_ids:
+            errors.append(f"Duplicate question id {qid}.")
+            summary["invalid"] += 1
+            continue
+        seen_ids.add(qid)
+        nq = normalize_quiztab_question(q, topic_map, errors, warnings, pack_id)
+        if nq and validate_import_question(nq, errors, warnings):
             normalized.append(nq)
             summary["valid"] += 1
             summary["types"][nq["type"]] = summary["types"].get(nq["type"], 0) + 1
@@ -1786,10 +2090,13 @@ def import_quiztab_v2(pack, replace_duplicates):
     added = 0
     skipped = 0
     replaced = 0
+    topics_added = 0
+    topics_updated = 0
 
     for t in topic_map.values():
         cur.execute("SELECT 1 FROM topics WHERE id = ?", (t["id"],))
-        if not cur.fetchone():
+        exists = cur.fetchone() is not None
+        if not exists:
             cur.execute(
                 "INSERT INTO topics (id, name, topic_area, parent_id, path, depth) VALUES (?, ?, ?, ?, ?, ?)",
                 (
@@ -1801,8 +2108,39 @@ def import_quiztab_v2(pack, replace_duplicates):
                     t.get("depth", 0),
                 ),
             )
+            topics_added += 1
+        else:
+            cur.execute(
+                "UPDATE topics SET name = ?, topic_area = ?, parent_id = ?, path = ?, depth = ? WHERE id = ?",
+                (
+                    t["name"],
+                    t.get("topic_area", ""),
+                    t.get("parent_id"),
+                    t.get("path") or t["id"],
+                    t.get("depth", 0),
+                    t["id"],
+                ),
+            )
+            topics_updated += 1
 
     upsert_pack(conn, pack_id, pack)
+
+    prompt_index = {}
+    similarity_threshold = 0.92
+    for q in normalized:
+        key = f"{q.get('type')}::{q.get('topicId')}"
+        norm = normalize_prompt_text(q.get("prompt"))
+        if not norm:
+            continue
+        candidates = prompt_index.setdefault(key, [])
+        for existing in candidates:
+            ratio = difflib.SequenceMatcher(None, norm, existing).ratio()
+            if ratio >= similarity_threshold:
+                warnings.append(
+                    f"Potential duplicate prompt for type {q.get('type')} in topic {q.get('topicId')} (similarity {ratio:.2f})."
+                )
+                break
+        candidates.append(norm)
 
     for q in normalized:
         cur.execute("SELECT 1 FROM questions WHERE id = ?", (q["id"],))
@@ -1853,10 +2191,15 @@ def import_quiztab_v2(pack, replace_duplicates):
 
     return {
         "summary": summary,
-        "errors": errors[:5],
+        "errors": errors,
+        "warnings": warnings,
         "added": added,
         "skipped": skipped,
         "replaced": replaced,
+        "counts": {
+            "topics": {"added": topics_added, "updated": topics_updated},
+            "questions": {"added": added, "updated": replaced, "skipped": skipped},
+        },
         "pack_id": pack_id,
     }
 
@@ -2149,6 +2492,7 @@ def export_pack(schema: str = "quiztab-questionpack-v2", pack_id: str = "default
         "assets": assets,
         "questions": [
             {
+                **(q.get("extra") or {}),
                 "id": q.get("id"),
                 "topic_slug": q.get("topicId"),
                 "method_id": q.get("method_id") or q.get("type"),
@@ -2569,12 +2913,26 @@ def grade_question_endpoint(question_id: str, data: dict, user=Depends(get_curre
     if not question:
         raise HTTPException(status_code=404, detail="Question not found")
     answer = data.get("answer") or {}
+    payload = question.get("payload", {})
+    if isinstance(payload, dict) and payload.get("grading_mode") == "self":
+        answer_key = build_answer_key(question)
+        return {
+            "status": "needs_self_grade",
+            "correct": None,
+            "expected": format_answer_key(answer_key),
+            "answer_key": answer_key,
+            "feedback": "Self grading required",
+            "solution": question.get("solution"),
+            "normalized_answer": answer,
+        }
     can_auto, correct, expected, debug = grade_question(question, answer)
     if not can_auto:
+        answer_key = build_answer_key(question)
         return {
             "status": "needs_self_grade",
             "correct": None,
             "expected": expected,
+            "answer_key": answer_key,
             "feedback": "Self grading required",
             "solution": question.get("solution"),
             "normalized_answer": answer,
@@ -2981,3 +3339,5 @@ def ai_browse(data: dict, user=Depends(get_current_user)):
     summary = ollama_generate(prompt, AI_MODELS["chat"], system=system, temperature=0.2)
     log_ai(user, "browse", {"url": url})
     return {"summary": summary, "source_url": url}
+
+

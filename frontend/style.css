@@ -588,6 +588,27 @@ body {
   gap: 8px;
 }
 
+.source-panel {
+  margin-top: 8px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: #fffaf2;
+}
+
+.source-panel summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--accent-2);
+}
+
+.source-body {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  word-break: break-word;
+}
+
 .support-section {
   display: grid;
   gap: 6px;
@@ -619,6 +640,15 @@ body {
 }
 
 .support-pre {
+  background: #f6f1e7;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px;
+  white-space: pre-wrap;
+  font-size: 12px;
+}
+
+.source-pre {
   background: #f6f1e7;
   border: 1px solid var(--line);
   border-radius: 6px;
