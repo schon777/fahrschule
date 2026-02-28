@@ -353,7 +353,7 @@
             kind: "spec",
             bytes: content.length
           });
-          downloadTextFile("ap2-questionpack-v2-spec.txt", content, "spec");
+          downloadTextFile("quiztab-questionpack-v2-spec.txt", content, "spec");
         } catch (error) {
           showError("Failed to generate AI format guide.", String(error));
           logger.error("builder", "ai guide generate failed", { error: String(error) });
@@ -368,7 +368,7 @@
             kind: "prompt",
             bytes: content.length
           });
-          downloadTextFile("ap2-questionpack-v2-prompt-template.txt", content, "prompt");
+          downloadTextFile("quiztab-questionpack-v2-prompt-template.txt", content, "prompt");
         } catch (error) {
           showError("Failed to generate AI prompt template.", String(error));
           logger.error("builder", "ai prompt generate failed", { error: String(error) });
@@ -3625,12 +3625,12 @@
   }
 
   function buildAiFormatSpecText() {
-    return `AP2 Question Pack Format Guide
-Schema: ap2-questionpack-v2
+    return `Quiztab Question Pack Format Guide
+Schema: quiztab-questionpack-v2
 
 Top-level JSON structure:
 {
-  "schema": "ap2-questionpack-v2",
+  "schema": "quiztab-questionpack-v2",
   "meta": {
     "source": "chatgpt",
     "created_at": "YYYY-MM-DD",
@@ -3639,6 +3639,8 @@ Top-level JSON structure:
   "topics": [
     { "slug": "topic-id", "title": "Topic Name", "parent_topic_id": null, "path": "topic-id", "depth": 0, "topic_area": "area" }
   ],
+  "methods": [],
+  "assets": [],
   "stems": [
     {
       "stem_id": "stem_001",
@@ -3655,9 +3657,9 @@ Top-level JSON structure:
 Global rules:
 - Return ONLY valid JSON. No markdown fences. No commentary.
 - Output structured data only. No extra keys outside the schema.
-- "schema" must be exactly "ap2-questionpack-v2".
+- "schema" must be exactly "quiztab-questionpack-v2".
 - Use unique ids for topics, stems, and questions.
-- All questions must be attached to a topic, either via topic_slug or via stem.topic_id.
+- Every question must have exactly one topic_slug (or be under a stem with topic_id).
 - Topic budget: reuse existing topics first. Create at most meta.topic_budget.max_new_topics new topics.
 - Topic depth: do not exceed meta.topic_budget.max_depth.
 - Prefer fewer, deeper topics over many flat topics.
@@ -3667,260 +3669,102 @@ Global rules:
 
 Topic Tree model (required for hierarchy):
 Topic fields:
-- slug (topic_id): string, unique id
+- slug: string, unique id
 - title: display name
 - parent_topic_id: nullable string (root if null)
 - path: computed path (parent_path/slug)
 - depth: integer depth (root = 0)
 - topic_area: optional grouping
-Rules:
-- Reuse existing topics when a similar topic already exists.
-- Only create a new topic when the stem does not fit any existing path.
-- Never create many sibling topics when a single parent can group them.
 
-Stem reuse model:
-Each stem is created once, then variants reuse the same stem_text.
-Stem fields:
-- stem_id, stem_text, topic_id
-Variant fields:
-- id, type, plus type-specific fields
-Rules:
-- Variants must keep the same meaning as stem_text.
-- Variants should not contradict each other.
-- If variant includes topic_slug, it must match stem.topic_id.
+Question model (all types):
+- Required: id, type (or method_id), topic_slug, prompt
+- Optional: explanation, source_ref, tags[], difficulty, support{}, payload{}
+- support.given[], support.belegsatz_snippets[], support.tables[] (optional)
+- payload.grading_mode: "self" for self-check (optional)
+
+Method number mapping (method_id -> type):
+1 single
+2 truefalse
+3 multi
+4 matching
+5 fillblank
+6 ordering
+7 calc_value
+8 calc_multi
+9 hotspot_svg
+10 troubleshoot_flow
+11 explain
+12 guess
+13 exam
 
 Supported question types (catalog)
 
 Type: single
-ID: "single"
-Purpose: One correct option among several.
-Input requirements: id, type, prompt, options[], correct[one index], topic_slug or stem.
-Output schema:
-{ "id": "...", "type": "single", "topic_slug": "...", "prompt": "...", "options": ["A","B"], "correct": [0] }
-Generation rules:
-1. Write a clear prompt.
-2. Provide 3 to 5 options.
-3. Exactly one correct index in correct[].
-Validation rules:
-- options length >= 2
-- correct length == 1
-- correct index is within options range
-DOs:
-- Make distractors plausible.
-- Keep options similar length.
-DON'Ts:
-- Do not add multiple correct indices.
-- Do not use "all of the above".
-Example 1:
+Required: options[], correct[one index]
+Example:
 { "id": "q_single_01", "type": "single", "topic_slug": "network-basics", "prompt": "What does LAN stand for?", "options": ["Local Area Network","Long Area Node","Low Access Node"], "correct": [0] }
-Example 2:
-{ "id": "q_single_02", "type": "single", "topic_slug": "security-basics", "prompt": "Which control is preventive?", "options": ["Firewall","Audit log","Forensic report"], "correct": [0] }
-
-Type: multi
-ID: "multi"
-Purpose: Multiple correct options.
-Input requirements: id, type, prompt, options[], correct[one or more indices], topic_slug or stem.
-Output schema:
-{ "id": "...", "type": "multi", "topic_slug": "...", "prompt": "...", "options": ["A","B","C"], "correct": [0,2] }
-Generation rules:
-1. Write a prompt that implies multiple answers.
-2. Provide 4 to 6 options.
-3. Provide 2+ correct indices.
-Validation rules:
-- options length >= 3
-- correct length >= 1
-- all correct indices within range
-DOs:
-- Include at least one strong distractor.
-- Keep wording consistent.
-DON'Ts:
-- Do not make all options correct.
-- Do not mix single-answer wording with multi-answer format.
-Example 1:
-{ "id": "q_multi_01", "type": "multi", "topic_slug": "network-osi", "prompt": "Which are Layer 2 protocols?", "options": ["Ethernet","IP","ARP","TCP"], "correct": [0,2] }
-Example 2:
-{ "id": "q_multi_02", "type": "multi", "topic_slug": "safety-electric", "prompt": "Select all safety checks before maintenance.", "options": ["Lockout","Verify absence of voltage","Wear gloves","Skip documentation"], "correct": [0,1,2] }
 
 Type: truefalse
-ID: "truefalse"
-Purpose: A statement that is either true or false.
-Input requirements: id, type, prompt, correct(boolean), topic_slug or stem.
-Output schema:
-{ "id": "...", "type": "truefalse", "topic_slug": "...", "prompt": "...", "correct": true }
-Generation rules:
-1. Use a single factual statement.
-2. Avoid ambiguous qualifiers.
-Validation rules:
-- correct must be true or false
-DOs:
-- Keep statements concise.
-- Ensure answer is unambiguous.
-DON'Ts:
-- Do not use double negatives.
-- Do not use opinion-based statements.
-Example 1:
+Required: correct boolean
+Example:
 { "id": "q_tf_01", "type": "truefalse", "topic_slug": "network-ip", "prompt": "IPv4 uses 32-bit addresses.", "correct": true }
-Example 2:
-{ "id": "q_tf_02", "type": "truefalse", "topic_slug": "safety-electric", "prompt": "The protective earth may be switched.", "correct": false }
 
-Type: fillblank
-ID: "fillblank"
-Purpose: Fill in missing word(s).
-Input requirements: id, type, prompt or text, answers[], topic_slug or stem.
-Output schema:
-{ "id": "...", "type": "fillblank", "topic_slug": "...", "prompt": "IPv4 has ___ bits.", "answers": ["32"] }
-Generation rules:
-1. Use a single blank (___) unless multiple blanks are required.
-2. Provide all acceptable answers (case-insensitive).
-Validation rules:
-- answers is a non-empty array
-DOs:
-- Include synonyms if valid.
-- Keep blanks short.
-DON'Ts:
-- Do not use multiple unrelated blanks.
-- Do not omit expected answer variants.
-Example 1:
-{ "id": "q_fb_01", "type": "fillblank", "topic_slug": "network-ip", "prompt": "IPv4 has ___ bits.", "answers": ["32"] }
-Example 2:
-{ "id": "q_fb_02", "type": "fillblank", "topic_slug": "math-ohm", "prompt": "U = R * ___.", "answers": ["I","i"] }
+Type: multi
+Required: options[], correct[one or more indices]
+Example:
+{ "id": "q_multi_01", "type": "multi", "topic_slug": "network-osi", "prompt": "Which are Layer 2 protocols?", "options": ["Ethernet","IP","ARP","TCP"], "correct": [0,2] }
 
 Type: matching
-ID: "matching"
-Purpose: Match items from left to right.
-Input requirements: id, type, prompt, left[], right[], pairs[], topic_slug or stem.
-Output schema:
-{ "id": "...", "type": "matching", "topic_slug": "...", "prompt": "...", "left": ["A","B"], "right": ["1","2"], "pairs": [[0,1],[1,0]] }
-Generation rules:
-1. Provide equal length left/right lists.
-2. Provide pairs mapping indices.
-Validation rules:
-- left and right arrays non-empty
-- pairs indices within bounds
-DOs:
-- Keep items short.
-- Avoid duplicate items on one side.
-DON'Ts:
-- Do not reuse the same right item for multiple left items unless intended.
-- Do not omit pairs when lengths differ.
-Example 1:
-{ "id": "q_match_01", "type": "matching", "topic_slug": "network-services", "prompt": "Match service to function.", "left": ["DNS","DHCP"], "right": ["Name resolution","IP assignment"], "pairs": [[0,0],[1,1]] }
-Example 2:
-{ "id": "q_match_02", "type": "matching", "topic_slug": "security-cia", "prompt": "Match CIA letter to meaning.", "left": ["C","I","A"], "right": ["Confidentiality","Integrity","Availability"], "pairs": [[0,0],[1,1],[2,2]] }
+Required: pairs[] of { left, right } (2+ pairs)
+Example:
+{ "id": "q_match_01", "type": "matching", "topic_slug": "network-services", "prompt": "Match service to function.", "pairs": [ { "left": "DNS", "right": "Name resolution" }, { "left": "DHCP", "right": "IP assignment" } ] }
+
+Type: fillblank
+Required: answers[] (accepted answers, case-insensitive)
+Example:
+{ "id": "q_fb_01", "type": "fillblank", "topic_slug": "network-ip", "prompt": "IPv4 has ___ bits.", "answers": ["32"] }
 
 Type: ordering
-ID: "ordering"
-Purpose: Put steps in correct sequence.
-Input requirements: id, type, prompt, items[], correct_order[], topic_slug or stem.
-Output schema:
-{ "id": "...", "type": "ordering", "topic_slug": "...", "prompt": "...", "items": ["A","B","C"], "correct_order": [0,1,2] }
-Generation rules:
-1. Provide 3 to 6 steps.
-2. correct_order is a permutation of item indices.
-Validation rules:
-- items length >= 2
-- correct_order has same length and valid indices
-DOs:
-- Keep each step concise.
-- Ensure only one correct order.
-DON'Ts:
-- Do not include duplicate steps.
-- Do not skip indices.
-Example 1:
+Required: items[], correct_order[] (permutation of indices)
+Example:
 { "id": "q_order_01", "type": "ordering", "topic_slug": "troubleshooting", "prompt": "Order the steps.", "items": ["Check physical","Check config","Test connectivity"], "correct_order": [0,1,2] }
-Example 2:
-{ "id": "q_order_02", "type": "ordering", "topic_slug": "backup-process", "prompt": "Order the backup workflow.", "items": ["Plan","Run backup","Test restore"], "correct_order": [0,1,2] }
 
-Type: guessword
-ID: "guessword"
-Purpose: Short answer, keyword or term.
-Input requirements: id, type, prompt, answers[], topic_slug or stem.
-Output schema:
-{ "id": "...", "type": "guessword", "topic_slug": "...", "prompt": "...", "answers": ["term"] }
-Generation rules:
-1. Prompt should ask for a single term or short phrase.
-2. Provide all acceptable answer variants.
-Validation rules:
-- answers array is non-empty
-DOs:
-- Include abbreviations if accepted.
-- Keep answers short.
-DON'Ts:
-- Do not use full-sentence answers.
-- Do not include unrelated synonyms.
-Example 1:
-{ "id": "q_guess_01", "type": "guessword", "topic_slug": "security-cia", "prompt": "What does CIA stand for (first word)?", "answers": ["confidentiality"] }
-Example 2:
-{ "id": "q_guess_02", "type": "guessword", "topic_slug": "network-vlan", "prompt": "A VLAN tag standard is ___ .", "answers": ["802.1q","8021q"] }
+Type: calc_value
+Required: payload.expected_value (number), payload.expected_unit (string), payload.rounding_decimals (int)
+Example:
+{ "id": "q_calc_01", "type": "calc_value", "topic_slug": "ohms", "prompt": "Calculate I.", "payload": { "expected_value": 1.25, "expected_unit": "A", "rounding_decimals": 2 } }
 
-Type: explainterm
-ID: "explainterm"
-Purpose: Explain a term in keywords.
-Input requirements: id, type, prompt, keywords[], topic_slug or stem.
-Output schema:
-{ "id": "...", "type": "explainterm", "topic_slug": "...", "prompt": "...", "keywords": ["k1","k2"] }
-Generation rules:
-1. Prompt asks to explain/define.
-2. Keywords list is short and specific.
-Validation rules:
-- keywords array non-empty
-DOs:
-- Include essential concept words.
-- Keep 3 to 6 keywords.
-DON'Ts:
-- Do not include full sentences.
-- Do not include irrelevant buzzwords.
-Example 1:
-{ "id": "q_explain_01", "type": "explainterm", "topic_slug": "network-dhcp", "prompt": "Explain DHCP.", "keywords": ["dynamic","ip address","lease"] }
-Example 2:
-{ "id": "q_explain_02", "type": "explainterm", "topic_slug": "security-cia", "prompt": "Explain availability.", "keywords": ["uptime","resilience","redundancy"] }
+Type: calc_multi
+Required: payload.fields[], payload.answers{}
+fields[] items: { id, label, unit, decimals }
+answers map: { "fieldId": { "value": 1.25, "unit": "A" } }
+Example:
+{ "id": "q_calc_multi_01", "type": "calc_multi", "topic_slug": "ohms", "prompt": "Compute I1 and I2.", "payload": { "fields": [ { "id": "i1", "label": "I1", "unit": "A", "decimals": 2 }, { "id": "i2", "label": "I2", "unit": "A", "decimals": 2 } ], "answers": { "i1": { "value": 1.25, "unit": "A" }, "i2": { "value": 0.8, "unit": "A" } } } }
+
+Type: hotspot_svg
+Required: payload.svg (string), payload.hotspots[], payload.correct[]
+Example:
+{ "id": "q_hotspot_01", "type": "hotspot_svg", "topic_slug": "hardware", "prompt": "Click the fuse.", "payload": { "svg": "<svg>...</svg>", "hotspots": ["fuse","switch"], "correct": ["fuse"] } }
+
+Type: troubleshoot_flow
+Required: payload.start, payload.nodes[], payload.success_node
+Example:
+{ "id": "q_flow_01", "type": "troubleshoot_flow", "topic_slug": "network", "prompt": "Diagnose the outage.", "payload": { "start": "n1", "success_node": "n3", "nodes": [ { "id": "n1", "text": "Check link?", "choices": [ { "label": "Up", "next": "n2" }, { "label": "Down", "next": "n3" } ] }, { "id": "n2", "text": "Check config?", "choices": [ { "label": "OK", "next": "n3" } ] }, { "id": "n3", "text": "Resolved", "choices": [] } ] } }
+
+Type: explain
+Required: expectedAnswer string
+Example:
+{ "id": "q_explain_01", "type": "explain", "topic_slug": "network-dhcp", "prompt": "Explain DHCP.", "expectedAnswer": "Dynamic IP leasing; client/server; lease time." }
+
+Type: guess
+Required: expectedAnswers[]
+Example:
+{ "id": "q_guess_01", "type": "guess", "topic_slug": "security-cia", "prompt": "What does CIA stand for (first word)?", "expectedAnswers": ["confidentiality"] }
 
 Type: exam
-ID: "exam"
-Purpose: Open response, self-graded.
-Input requirements: id, type, prompt, answer_key, topic_slug or stem.
-Output schema:
-{ "id": "...", "type": "exam", "topic_slug": "...", "prompt": "...", "answer_key": "..." }
-Generation rules:
-1. Prompt should be open-ended but focused.
-2. answer_key lists key points.
-Validation rules:
-- answer_key is non-empty string
-DOs:
-- Keep answer_key short and scorable.
-- Use bullet-like phrasing inside answer_key.
-DON'Ts:
-- Do not leave answer_key empty.
-- Do not create multi-part prompts without scoring notes.
-Example 1:
-{ "id": "q_exam_01", "type": "exam", "topic_slug": "safety-electric", "prompt": "Describe the five safety rules.", "answer_key": "Disconnect; Secure; Verify; Ground; Cover adjacent." }
-Example 2:
-{ "id": "q_exam_02", "type": "exam", "topic_slug": "network-troubleshooting", "prompt": "Explain a DHCP failure workflow.", "answer_key": "Check link; Verify scope; Confirm relay; Test lease." }
-
-Topic tree example with 3 levels:
-{
-  "topics": [
-    { "slug": "network", "title": "Network", "parent_topic_id": null, "path": "network", "depth": 0 },
-    { "slug": "ip", "title": "IP", "parent_topic_id": "network", "path": "network/ip", "depth": 1 },
-    { "slug": "ipv4", "title": "IPv4", "parent_topic_id": "ip", "path": "network/ip/ipv4", "depth": 2 }
-  ]
-}
-
-Stem reuse example (one stem, three variants):
-{
-  "stems": [
-    {
-      "stem_id": "stem_usa_president",
-      "stem_text": "Who is the president of the USA?",
-      "topic_id": "civics-us",
-      "variants": [
-        { "id": "q_tf_usa_president", "type": "truefalse", "prompt": "The president of the USA is the head of the executive branch.", "correct": true },
-        { "id": "q_mc_usa_president", "type": "single", "prompt": "Who is the president of the USA?", "options": ["A","B","C"], "correct": [0] },
-        { "id": "q_fb_usa_president", "type": "fillblank", "prompt": "The president of the USA is ___ .", "answers": ["Name"] }
-      ]
-    }
-  ]
-}
+Required: expectedAnswer string
+Example:
+{ "id": "q_exam_01", "type": "exam", "topic_slug": "safety-electric", "prompt": "Describe the five safety rules.", "expectedAnswer": "Disconnect; Secure; Verify; Ground; Cover adjacent." }
 `;
   }
 
@@ -3929,14 +3773,14 @@ Stem reuse example (one stem, three variants):
 
 You are generating a JSON question pack for this app.
 Return ONLY valid JSON. No markdown fences. No commentary.
-Schema must be: ap2-questionpack-v2
+Schema must be: quiztab-questionpack-v2
 
 SUPPORTED TYPES:
-single, multi, truefalse, fillblank, matching, ordering, guessword, explainterm, exam
+single, truefalse, multi, matching, fillblank, ordering, calc_value, calc_multi, hotspot_svg, troubleshoot_flow, explain, guess, exam
 
 TOP-LEVEL FORMAT:
 {
-  "schema": "ap2-questionpack-v2",
+  "schema": "quiztab-questionpack-v2",
   "meta": {
     "source": "chatgpt",
     "created_at": "YYYY-MM-DD",
@@ -3945,6 +3789,8 @@ TOP-LEVEL FORMAT:
   "topics": [
     { "slug": "topic-id", "title": "Topic Title", "parent_topic_id": null, "path": "topic-id", "depth": 0, "topic_area": "Area" }
   ],
+  "methods": [],
+  "assets": [],
   "stems": [
     { "stem_id": "stem_001", "stem_text": "Question stem", "topic_id": "topic-id", "variants": [ { ... } ] }
   ],
@@ -3954,15 +3800,19 @@ TOP-LEVEL FORMAT:
 FIELD RULES (summary):
 - Use topic tree: slug, title, parent_topic_id, path, depth.
 - Prefer stems + variants for reuse. questions[] is for standalone items.
-- Every question/variant: id, type, prompt plus type-specific fields.
+- Every question/variant: id, type (or method_id), topic_slug, prompt plus type-specific fields.
 - single/multi: options array, correct array of indices (0-based).
 - truefalse: correct true or false.
 - fillblank: answers array.
-- matching: left array, right array, pairs array of [leftIndex, rightIndex].
+- matching: pairs array of { left, right }.
 - ordering: items array, correct_order array of indices (0-based).
-- guessword: answers array.
-- explainterm: keywords array.
-- exam: answer_key string.
+- guess: expectedAnswers array.
+- explain/exam: expectedAnswer string.
+- calc_value: payload.expected_value, payload.expected_unit, payload.rounding_decimals.
+- calc_multi: payload.fields[] and payload.answers{} (answers map field id to { value, unit }).
+- hotspot_svg: payload.svg, payload.hotspots[], payload.correct[].
+- troubleshoot_flow: payload.start, payload.nodes[], payload.success_node.
+- Optional: payload.grading_mode = "self" for self-check.
 - Do not invent external URLs. Use source_ref as plain text.
 
 CONSTRAINTS (fill in before sending to ChatGPT):
