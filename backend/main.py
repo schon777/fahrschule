@@ -2227,12 +2227,22 @@ def normalize_zip_path(path):
     return clean
 
 
+def normalize_asset_path(path):
+    clean = normalize_zip_path(path)
+    if not clean:
+        return ""
+    for prefix in ("frontend/assets/", "assets/"):
+        if clean.startswith(prefix):
+            return clean[len(prefix):]
+    return clean
+
+
 def build_zip_index(zip_file):
     index = {}
     for info in zip_file.infolist():
         if info.is_dir():
             continue
-        name = normalize_zip_path(info.filename)
+        name = normalize_asset_path(info.filename)
         if not name:
             continue
         if name not in index:
@@ -2241,7 +2251,7 @@ def build_zip_index(zip_file):
 
 
 def resolve_zip_entry(requested, zip_index):
-    norm = normalize_zip_path(requested)
+    norm = normalize_asset_path(requested)
     if not norm:
         return ""
     if norm in zip_index:
