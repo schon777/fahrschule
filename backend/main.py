@@ -16,6 +16,7 @@ import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import jwt
 from fastapi import FastAPI, HTTPException, Depends, Request, UploadFile, File
@@ -313,6 +314,8 @@ def normalize_quiztab_question(input_q, topic_map, errors, warnings, pack_id):
             "type",
             "difficulty",
             "prompt",
+            "prompt_image",
+            "option_images",
             "payload",
             "support",
             "solution",
@@ -329,6 +332,8 @@ def normalize_quiztab_question(input_q, topic_map, errors, warnings, pack_id):
         "type": method_id,
         "method_id": method_id,
         "prompt": prompt,
+        "prompt_image": input_q.get("prompt_image") or payload.get("prompt_image", ""),
+        "option_images": input_q.get("option_images") or payload.get("option_images"),
         "payload": payload,
         "support": support,
         "solution": solution,
@@ -1512,6 +1517,8 @@ def normalize_question(input_q, topic_map, errors):
         "topicId": topic_slug,
         "type": q_type,
         "prompt": prompt,
+        "prompt_image": input_q.get("prompt_image", ""),
+        "option_images": input_q.get("option_images"),
         "explanation": input_q.get("explanation", ""),
         "source_ref": input_q.get("source_ref", "internal:import"),
         "tags": input_q.get("tags", []),
@@ -2204,8 +2211,144 @@ def import_quiztab_v2(pack, replace_duplicates):
     }
 
 
-@app.post("/questions/import")
-def import_questions(data: dict, replace_duplicates: bool = False, user=Depends(get_current_user)):
+def get_assets_dir():
+    root = Path(__file__).resolve().parent.parent
+    assets_dir = root / "frontend" / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    return assets_dir
+
+
+def normalize_zip_path(path):
+    if not path:
+        return ""
+    clean = str(path).replace("\\", "/").lstrip("/")
+    if clean == ".." or clean.startswith("../") or "/../" in clean:
+        return ""
+    return clean
+
+
+def build_zip_index(zip_file):
+    index = {}
+    for info in zip_file.infolist():
+        if info.is_dir():
+            continue
+        name = normalize_zip_path(info.filename)
+        if not name:
+            continue
+        if name not in index:
+            index[name] = info.filename
+    return index
+
+
+def resolve_zip_entry(requested, zip_index):
+    norm = normalize_zip_path(requested)
+    if not norm:
+        return ""
+    if norm in zip_index:
+        return norm
+    base = os.path.basename(norm)
+    if not base:
+        return ""
+    matches = [key for key in zip_index.keys() if os.path.basename(key) == base]
+    if len(matches) == 1:
+        return matches[0]
+    return ""
+
+
+def write_zip_entry(zip_file, zip_index, entry_name, assets_dir):
+    original = zip_index.get(entry_name)
+    if not original:
+        return False
+    target_path = assets_dir / Path(entry_name)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    with zip_file.open(original) as src, open(target_path, "wb") as dst:
+        dst.write(src.read())
+    return True
+
+
+def map_image_path(value, zip_file, zip_index, assets_dir, warnings):
+    if not value or not isinstance(value, str):
+        return value
+    if value.startswith(("http://", "https://", "data:", "/assets/")):
+        return value
+    entry = resolve_zip_entry(value, zip_index)
+    if not entry:
+        warnings.append(f"Image not found in zip: {value}")
+        return value
+    if not write_zip_entry(zip_file, zip_index, entry, assets_dir):
+        warnings.append(f"Image extract failed: {value}")
+        return value
+    return "/assets/" + entry.replace("\\", "/")
+
+
+def rewrite_question_images(question, zip_file, zip_index, assets_dir, warnings):
+    if not isinstance(question, dict):
+        return
+    if "prompt_image" in question:
+        question["prompt_image"] = map_image_path(
+            question.get("prompt_image"), zip_file, zip_index, assets_dir, warnings
+        )
+    payload = question.get("payload")
+    if isinstance(payload, dict) and "prompt_image" in payload:
+        payload["prompt_image"] = map_image_path(
+            payload.get("prompt_image"), zip_file, zip_index, assets_dir, warnings
+        )
+    option_images = question.get("option_images")
+    if isinstance(option_images, list):
+        question["option_images"] = [
+            map_image_path(v, zip_file, zip_index, assets_dir, warnings) for v in option_images
+        ]
+    elif isinstance(option_images, dict):
+        question["option_images"] = {
+            k: map_image_path(v, zip_file, zip_index, assets_dir, warnings)
+            for k, v in option_images.items()
+        }
+    elif isinstance(option_images, str):
+        question["option_images"] = map_image_path(
+            option_images, zip_file, zip_index, assets_dir, warnings
+        )
+    if isinstance(payload, dict) and "option_images" in payload:
+        oi = payload.get("option_images")
+        if isinstance(oi, list):
+            payload["option_images"] = [
+                map_image_path(v, zip_file, zip_index, assets_dir, warnings) for v in oi
+            ]
+        elif isinstance(oi, dict):
+            payload["option_images"] = {
+                k: map_image_path(v, zip_file, zip_index, assets_dir, warnings)
+                for k, v in oi.items()
+            }
+        elif isinstance(oi, str):
+            payload["option_images"] = map_image_path(
+                oi, zip_file, zip_index, assets_dir, warnings
+            )
+    options = question.get("options")
+    if isinstance(options, list):
+        changed = False
+        for opt in options:
+            if isinstance(opt, dict) and "image" in opt:
+                opt["image"] = map_image_path(
+                    opt.get("image"), zip_file, zip_index, assets_dir, warnings
+                )
+                changed = True
+        if changed:
+            question["options"] = options
+
+
+def rewrite_pack_images(pack, zip_file, zip_index, assets_dir, warnings):
+    if not isinstance(pack, dict):
+        return
+    questions = pack.get("questions") or []
+    for q in questions:
+        rewrite_question_images(q, zip_file, zip_index, assets_dir, warnings)
+    stems = pack.get("stems") or []
+    for stem in stems:
+        variants = stem.get("variants") if isinstance(stem, dict) else []
+        if isinstance(variants, list):
+            for variant in variants:
+                rewrite_question_images(variant, zip_file, zip_index, assets_dir, warnings)
+
+def import_pack_data(data: dict, replace_duplicates: bool = False):
     schema = data.get("schema")
     if schema == "quiztab-questionpack-v2":
         return import_quiztab_v2(data, replace_duplicates)
@@ -2335,6 +2478,39 @@ def import_questions(data: dict, replace_duplicates: bool = False, user=Depends(
     }
 
 
+@app.post("/questions/import")
+def import_questions(data: dict, replace_duplicates: bool = False, user=Depends(get_current_user)):
+    return import_pack_data(data, replace_duplicates)
+
+
+@app.post("/questions/import_zip")
+def import_questions_with_assets(
+    json_file: UploadFile = File(...),
+    zip_file: UploadFile = File(...),
+    replace_duplicates: bool = False,
+    user=Depends(get_current_user),
+):
+    try:
+        raw = json_file.file.read()
+        data = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON file") from exc
+    try:
+        zip_bytes = zip_file.file.read()
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zip_obj:
+            assets_dir = get_assets_dir()
+            zip_index = build_zip_index(zip_obj)
+            asset_warnings = []
+            rewrite_pack_images(data, zip_obj, zip_index, assets_dir, asset_warnings)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid ZIP file") from exc
+
+    result = import_pack_data(data, replace_duplicates)
+    if asset_warnings:
+        result["asset_warnings"] = asset_warnings[:20]
+    return result
+
+
 @app.get("/questions/export")
 def export_questions(user=Depends(get_current_user)):
     conn = get_db()
@@ -2383,6 +2559,8 @@ def export_questions(user=Depends(get_current_user)):
             "topic_slug": q["topicId"],
             "type": q["type"],
             "prompt": q.get("prompt"),
+            "prompt_image": q.get("prompt_image", ""),
+            "option_images": q.get("option_images"),
             "explanation": q.get("explanation", ""),
             "source_ref": q.get("source_ref", ""),
             "tags": q.get("tags", []),
@@ -2498,6 +2676,8 @@ def export_pack(schema: str = "quiztab-questionpack-v2", pack_id: str = "default
                 "method_id": q.get("method_id") or q.get("type"),
                 "difficulty": q.get("difficulty", ""),
                 "prompt": q.get("prompt"),
+                "prompt_image": q.get("prompt_image", ""),
+                "option_images": q.get("option_images"),
                 "payload": q.get("payload", {}),
                 "support": q.get("support", {}),
                 "solution": q.get("solution", {}),

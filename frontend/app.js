@@ -98,6 +98,7 @@
     quizTopic: document.getElementById("quiz-topic"),
     quizMode: document.getElementById("quiz-mode"),
     importFile: document.getElementById("import-file"),
+    importZip: document.getElementById("import-zip"),
     importReplace: document.getElementById("import-replace"),
     importParse: document.getElementById("import-parse"),
     importApply: document.getElementById("import-apply"),
@@ -774,7 +775,11 @@
     const form = document.createElement("div");
     form.className = "quiz-form";
     form.id = "quiz-form";
-    form.innerHTML = `<div class="quiz-prompt">${escapeHtml(question.prompt)}</div>`;
+    const promptImage = getQuestionImage(question);
+    const promptMedia = promptImage
+      ? `<div class="quiz-media">${renderImage(promptImage, "Question image", "quiz-prompt-image")}</div>`
+      : "";
+    form.innerHTML = `<div class="quiz-prompt">${escapeHtml(question.prompt)}</div>${promptMedia}`;
     form.innerHTML += renderSupportPanel(question);
     form.innerHTML += renderSourcePanel(question);
 
@@ -782,45 +787,58 @@
     if (type === "multi") {
       form.innerHTML += question.options
         .map(
-          (opt, index) => `
+          (opt, index) => {
+            const parsed = extractTextAndImage(opt);
+            const optImage = parsed.image || getOptionImage(question, index, opt);
+            return `
             <label class="quiz-option">
               <input type="checkbox" name="option" value="${index}" />
-              <span>${escapeHtml(opt)}</span>
+              ${renderOptionContent(parsed.text, optImage)}
             </label>
-          `
+          `;
+          }
         )
         .join("");
       setSubmitEnabled(true);
     } else if (type === "single") {
       form.innerHTML += question.options
         .map(
-          (opt, index) => `
+          (opt, index) => {
+            const parsed = extractTextAndImage(opt);
+            const optImage = parsed.image || getOptionImage(question, index, opt);
+            return `
             <label class="quiz-option">
               <input type="radio" name="single" value="${index}" />
-              <span>${escapeHtml(opt)}</span>
+              ${renderOptionContent(parsed.text, optImage)}
             </label>
-          `
+          `;
+          }
         )
         .join("");
       setSubmitEnabled(true);
     } else if (type === "truefalse") {
       ["true", "false"].forEach((val) => {
+        const optImage = getTrueFalseImage(question, val);
         form.innerHTML += `
           <label class="quiz-option">
             <input type="radio" name="truefalse" value="${val}" />
-            <span>${val === "true" ? "True" : "False"}</span>
+            ${renderOptionContent(val === "true" ? "True" : "False", optImage)}
           </label>
         `;
       });
       setSubmitEnabled(true);
     } else if (type === "matching") {
       const rightOptions = shuffleArray(
-        question.pairs.map((pair) => pair.right)
+        question.pairs.map((pair) => {
+          const parsed = extractTextAndImage(pair.right);
+          return parsed.text;
+        })
       );
       question.pairs.forEach((pair, idx) => {
+        const leftParsed = extractTextAndImage(pair.left);
         form.innerHTML += `
           <div class="matching-row">
-            <div>${escapeHtml(pair.left)}</div>
+            <div>${renderOptionContent(leftParsed.text, leftParsed.image) || escapeHtml(leftParsed.text)}</div>
             <select name="match-${idx}">
               <option value="">Select</option>
               ${rightOptions
@@ -864,9 +882,12 @@
       const items = question.items || [];
       form.innerHTML += items
         .map(
-          (item, index) => `
+          (item, index) => {
+            const parsed = extractTextAndImage(item);
+            const content = renderOptionContent(parsed.text, parsed.image) || escapeHtml(parsed.text);
+            return `
             <div class="matching-row">
-              <div>${escapeHtml(item)}</div>
+              <div>${content}</div>
               <select name="order-${index}">
                 <option value="">Select</option>
                 ${items
@@ -877,7 +898,8 @@
                   .join("")}
               </select>
             </div>
-          `
+          `;
+          }
         )
         .join("");
       setSubmitEnabled(true);
@@ -992,6 +1014,115 @@
       return `<table class="support-table">${headerHtml}${bodyHtml}</table>`;
     }
     return `<pre class="support-pre">${escapeHtml(asset.content || "")}</pre>`;
+  }
+
+  function extractTextAndImage(value) {
+    if (value && typeof value === "object") {
+      const text =
+        value.text ??
+        value.label ??
+        value.title ??
+        value.value ??
+        "";
+      const image =
+        value.image ??
+        value.image_id ??
+        value.asset_id ??
+        value.assetId ??
+        value.src ??
+        value.url ??
+        null;
+      return { text: String(text || ""), image };
+    }
+    return { text: value === undefined || value === null ? "" : String(value), image: null };
+  }
+
+  function extractImageFromAsset(asset) {
+    if (!asset) return "";
+    if (asset.url) return asset.url;
+    if (asset.src) return asset.src;
+    if (asset.content && typeof asset.content === "string") return asset.content;
+    if (asset.data && typeof asset.data === "string") return asset.data;
+    return "";
+  }
+
+  function resolveImageSource(value) {
+    if (!value) return "";
+    if (typeof value === "string") {
+      const asset = resolveAssetById(value);
+      if (asset) {
+        return extractImageFromAsset(asset) || value;
+      }
+      return value;
+    }
+    if (typeof value === "object") {
+      const refId = value.asset_id || value.assetId || value.id;
+      if (refId) {
+        const asset = resolveAssetById(refId);
+        if (asset) {
+          return extractImageFromAsset(asset);
+        }
+      }
+      return value.url || value.src || value.data || value.content || "";
+    }
+    return "";
+  }
+
+  function renderImage(value, alt, className) {
+    const src = resolveImageSource(value);
+    if (!src) return "";
+    const cls = className ? ` class="${className}"` : "";
+    return `<img${cls} src="${escapeAttr(src)}" alt="${escapeAttr(alt || "Image")}" loading="lazy" />`;
+  }
+
+  function getQuestionImage(question) {
+    return (
+      question.prompt_image ||
+      (question.payload || {}).prompt_image ||
+      (question.extra || {}).prompt_image ||
+      null
+    );
+  }
+
+  function getOptionImages(question) {
+    return (
+      question.option_images ||
+      (question.payload || {}).option_images ||
+      (question.extra || {}).option_images ||
+      null
+    );
+  }
+
+  function getOptionImage(question, index, optionValue) {
+    if (optionValue && typeof optionValue === "object" && optionValue.image) {
+      return optionValue.image;
+    }
+    const optionImages = getOptionImages(question);
+    if (Array.isArray(optionImages)) {
+      return optionImages[index] || null;
+    }
+    if (optionImages && typeof optionImages === "object") {
+      return optionImages[index] || optionImages[String(index)] || null;
+    }
+    return null;
+  }
+
+  function getTrueFalseImage(question, value) {
+    const optionImages = getOptionImages(question);
+    if (optionImages && typeof optionImages === "object" && !Array.isArray(optionImages)) {
+      return optionImages[value] || null;
+    }
+    const index = value === "true" ? 0 : 1;
+    return getOptionImage(question, index, null);
+  }
+
+  function renderOptionContent(text, image) {
+    const safeText = text ? `<span class="option-text">${escapeHtml(text)}</span>` : "";
+    const imageHtml = image
+      ? `<span class="option-media">${renderImage(image, text || "Option image", "quiz-option-image")}</span>`
+      : "";
+    if (!safeText && !imageHtml) return "";
+    return `<span class="option-body">${safeText}${imageHtml}</span>`;
   }
 
   function renderSupportPanel(question) {
@@ -2508,6 +2639,8 @@
         "type",
         "difficulty",
         "prompt",
+        "prompt_image",
+        "option_images",
         "payload",
         "support",
         "solution",
@@ -2524,6 +2657,8 @@
       type: methodId,
       method_id: methodId,
       prompt,
+      prompt_image: input.prompt_image || (input.payload || {}).prompt_image || "",
+      option_images: input.option_images || (input.payload || {}).option_images || null,
       payload: input.payload || {},
       support: input.support || {},
       solution: input.solution || {},
@@ -2648,6 +2783,8 @@
       topicId: topicSlug,
       type,
       prompt,
+      prompt_image: input.prompt_image || "",
+      option_images: input.option_images || null,
       explanation: input.explanation || "",
       source_ref: input.source_ref || "internal:import",
       tags: Array.isArray(input.tags) ? input.tags : []
@@ -2743,13 +2880,40 @@
 
   async function applyImportResult(pack, result, replaceDuplicates) {
     try {
-      const res = await apiFetch(
-        `/questions/import?replace_duplicates=${replaceDuplicates ? "1" : "0"}`,
-        {
-          method: "POST",
-          body: JSON.stringify(pack)
+      const zipFile =
+        ui.importZip && ui.importZip.files && ui.importZip.files[0]
+          ? ui.importZip.files[0]
+          : null;
+      let res;
+      if (zipFile) {
+        const jsonFile =
+          ui.importFile && ui.importFile.files && ui.importFile.files[0]
+            ? ui.importFile.files[0]
+            : null;
+        const form = new FormData();
+        if (jsonFile) {
+          form.append("json_file", jsonFile, jsonFile.name);
+        } else {
+          form.append(
+            "json_file",
+            new Blob([JSON.stringify(pack)], { type: "application/json" }),
+            "pack.json"
+          );
         }
-      );
+        form.append("zip_file", zipFile, zipFile.name);
+        res = await apiFetchForm(
+          `/questions/import_zip?replace_duplicates=${replaceDuplicates ? "1" : "0"}`,
+          form
+        );
+      } else {
+        res = await apiFetch(
+          `/questions/import?replace_duplicates=${replaceDuplicates ? "1" : "0"}`,
+          {
+            method: "POST",
+            body: JSON.stringify(pack)
+          }
+        );
+      }
       state.lastImportSummary = {
         added: res.added,
         skipped: res.skipped,
@@ -3679,6 +3843,7 @@ Topic fields:
 Question model (all types):
 - Required: id, type (or method_id), topic_slug, prompt
 - Optional: explanation, source_ref, tags[], difficulty, support{}, payload{}
+- Optional media: prompt_image (url or asset id), option_images[] (aligned with options)
 - support.given[], support.belegsatz_snippets[], support.tables[] (optional)
 - payload.grading_mode: "self" for self-check (optional)
 
@@ -4100,6 +4265,8 @@ Now generate the JSON question pack.`;
       topic_slug: q.topicId,
       type: mapExportType(q.type),
       prompt: q.prompt,
+      prompt_image: q.prompt_image || "",
+      option_images: q.option_images || null,
       explanation: q.explanation || "",
       source_ref: q.source_ref || "",
       tags: q.tags || []
@@ -4561,6 +4728,26 @@ Now generate the JSON question pack.`;
     return res.json();
   }
 
+  async function apiFetchForm(path, formData, auth = true) {
+    const headers = {};
+    if (auth) {
+      const token = localStorage.getItem(STORAGE_KEYS.token);
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+    }
+    const res = await fetch(getApiBase() + path, { method: "POST", body: formData, headers });
+    if (res.status === 401) {
+      showLogin();
+      throw new Error("Unauthorized");
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || res.statusText);
+    }
+    return res.json();
+  }
+
 
   async function loadInitialData() {
     try {
@@ -4740,6 +4927,15 @@ Now generate the JSON question pack.`;
   }
 
   function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function escapeAttr(str) {
     return String(str)
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
