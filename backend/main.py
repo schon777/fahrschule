@@ -2279,7 +2279,7 @@ def write_zip_entry(zip_file, zip_index, entry_name, assets_dir):
 def map_image_path(value, zip_file, zip_index, assets_dir, warnings):
     if not value or not isinstance(value, str):
         return value
-    if value.startswith(("http://", "https://", "data:", "/assets/")):
+    if value.startswith(("http://", "https://", "data:")):
         return value
     entry = resolve_zip_entry(value, zip_index)
     if not entry:
